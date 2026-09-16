@@ -1,0 +1,118 @@
+package com.thenetworkplan.networkplan.ops.domain;
+
+import com.thenetworkplan.networkplan.airworthiness.domain.Aircraft;
+import com.thenetworkplan.networkplan.common.domain.BaseEntity;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.Table;
+import java.time.OffsetDateTime;
+import lombok.Getter;
+import lombok.Setter;
+
+/**
+ * The root of the model: one elementary flight, with a stable key.
+ *
+ * <p>Two decisions worth naming. First, {@link #businessKey} is unique and never
+ * regenerated — the prototype rebuilt its whole programme from a seeded random
+ * generator on every render, so nothing could be referenced twice. Second, the
+ * aircraft is a real association: the dispatch board shows the registration and
+ * the type on every row, so the query fetch-joins it rather than paying a
+ * round trip per line.
+ */
+@Entity
+@Table(name = "legs", schema = "ops")
+@Getter
+@Setter
+public class Leg extends BaseEntity {
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "trip_id")
+    private Trip trip;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "aircraft_id", nullable = false)
+    private Aircraft aircraft;
+
+    @Column(name = "flight_no", nullable = false)
+    private String flightNo;
+
+    @Column(name = "dep_icao", nullable = false)
+    private String depIcao;
+
+    @Column(name = "arr_icao", nullable = false)
+    private String arrIcao;
+
+    /** Operating base the leg is counted against, for the Base filter. */
+    @Column(name = "base_icao")
+    private String baseIcao;
+
+    @Column(name = "std", columnDefinition = "timestamptz", nullable = false)
+    private OffsetDateTime std;
+
+    @Column(name = "sta", columnDefinition = "timestamptz", nullable = false)
+    private OffsetDateTime sta;
+
+    @Column(name = "etd", columnDefinition = "timestamptz")
+    private OffsetDateTime etd;
+
+    @Column(name = "eta", columnDefinition = "timestamptz")
+    private OffsetDateTime eta;
+
+    /** OOOI: off blocks. */
+    @Column(name = "out_at", columnDefinition = "timestamptz")
+    private OffsetDateTime outAt;
+
+    /** OOOI: airborne. Distinct from OUT — the prototype used one value for both. */
+    @Column(name = "off_at", columnDefinition = "timestamptz")
+    private OffsetDateTime offAt;
+
+    /** OOOI: landing. */
+    @Column(name = "on_at", columnDefinition = "timestamptz")
+    private OffsetDateTime onAt;
+
+    /** OOOI: on blocks. */
+    @Column(name = "in_at", columnDefinition = "timestamptz")
+    private OffsetDateTime inAt;
+
+    /** Calculated take-off time received from ATFM. */
+    @Column(name = "ctot", columnDefinition = "timestamptz")
+    private OffsetDateTime ctot;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false)
+    private LegStatus status = LegStatus.PLANNED;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "flight_type", nullable = false)
+    private FlightType flightType = FlightType.PAX;
+
+    @Column(name = "pax_count", nullable = false)
+    private int paxCount;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "risk_level")
+    private RiskLevel riskLevel;
+
+    @Column(name = "mvt_sent_at", columnDefinition = "timestamptz")
+    private OffsetDateTime mvtSentAt;
+
+    @Column(name = "remark")
+    private String remark;
+
+    @Column(name = "business_key", nullable = false, updatable = false)
+    private String businessKey;
+
+    /** Revised time of departure when there is one, otherwise the scheduled time. */
+    public OffsetDateTime effectiveDeparture() {
+        return etd != null ? etd : std;
+    }
+
+    public OffsetDateTime effectiveArrival() {
+        return eta != null ? eta : sta;
+    }
+}
