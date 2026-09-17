@@ -26,6 +26,7 @@ import com.thenetworkplan.networkplan.crew.repository.QualificationRepository;
 import com.thenetworkplan.networkplan.crew.service.CrewAssignmentService;
 import com.thenetworkplan.networkplan.crew.service.CrewDocumentChecker;
 import com.thenetworkplan.networkplan.crewscheduling.dto.AssignSeatCommand;
+import com.thenetworkplan.networkplan.crewscheduling.dto.RecordCheckTimesCommand;
 import com.thenetworkplan.networkplan.crewscheduling.dto.CrewAvailability;
 import com.thenetworkplan.networkplan.crewscheduling.dto.CrewCandidateDto;
 import com.thenetworkplan.networkplan.crewscheduling.dto.SchedulingBoardDto;
@@ -375,5 +376,38 @@ public class CrewSchedulingServiceImpl implements CrewSchedulingService {
         } catch (IllegalArgumentException ex) {
             throw new BusinessRuleException("CREW_ROLE_UNKNOWN", "Unknown role: " + value);
         }
+    }
+
+    /**
+     * Les heures reelles de prise et de fin de service.
+     *
+     * <p><b>La fin de service ne precede pas la prise.</b> C est la seule regle
+     * que le serveur impose ici : le reste — duree maximale de FDP, repos
+     * minimal — appartient au moteur FTL, et le dossier de vol ne fait
+     * qu enregistrer ce qui a ete constate.
+     */
+    @Override
+    @Transactional
+    @CacheEvict(cacheNames = CacheNames.DISPATCH_BOARD, allEntries = true)
+    public CrewMemberDto recordCheckTimes(UUID tenantId, UUID assignmentId,
+                                          RecordCheckTimesCommand command) {
+        CrewAssignment assignment = assignmentRepository.findById(assignmentId)
+                .filter(candidate -> tenantId.equals(candidate.getTenantId()))
+                .orElseThrow(() -> ResourceNotFoundException.of("Crew assignment", assignmentId));
+
+        if (command.checkInAt() != null && command.checkOutAt() != null
+                && command.checkOutAt().isBefore(command.checkInAt())) {
+            throw new BusinessRuleException("CHECK_OUT_BEFORE_CHECK_IN",
+                    "A check-out cannot precede the check-in of the same duty");
+        }
+        assignment.setCheckedInAt(command.checkInAt());
+        assignment.setCheckedOutAt(command.checkOutAt());
+        CrewAssignment saved = assignmentRepository.save(assignment);
+
+        Leg leg = legRepository.findOneWithDetails(tenantId, saved.getLegId())
+                .orElseThrow(() -> ResourceNotFoundException.of("Leg", saved.getLegId()));
+        LocalDate flightDate = leg.getStd().atZoneSameInstant(java.time.ZoneOffset.UTC).toLocalDate();
+        return mapper.toDto(saved, flightDate,
+                documentChecker.check(saved.getPerson(), flightDate));
     }
 }

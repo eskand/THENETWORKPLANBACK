@@ -4,6 +4,8 @@ import com.thenetworkplan.networkplan.common.tenant.TenantContext;
 import com.thenetworkplan.networkplan.weather.dto.WeatherDtos.ObservationDto;
 import com.thenetworkplan.networkplan.weather.dto.WeatherDtos.RecordMetarCommand;
 import com.thenetworkplan.networkplan.weather.dto.WeatherDtos.WeatherBoardDto;
+import com.thenetworkplan.networkplan.weather.dto.LegLvpDto;
+import com.thenetworkplan.networkplan.weather.service.LegLvpService;
 import com.thenetworkplan.networkplan.weather.service.WeatherService;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -30,9 +32,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class WeatherController {
 
     private final WeatherService weatherService;
+    private final LegLvpService legLvpService;
 
-    public WeatherController(WeatherService weatherService) {
+    public WeatherController(WeatherService weatherService, LegLvpService legLvpService) {
         this.weatherService = weatherService;
+        this.legLvpService = legLvpService;
     }
 
     /** @param stations comma-separated ICAO codes, e.g. {@code DTTA,LFML,LFPB} */
@@ -46,5 +50,17 @@ public class WeatherController {
     public ObservationDto record(@Valid @RequestBody RecordMetarCommand command,
                                  @RequestHeader(name = "X-Actor-Id", required = false) UUID actorId) {
         return weatherService.record(TenantContext.require(), command, actorId);
+    }
+
+    /**
+     * Le verdict de faible visibilite d'un ou plusieurs aerodromes.
+     *
+     * <p>Le dossier de vol s'en sert quand il n'y a pas d'etape : un appareil
+     * immobilise n'a qu'une escale, celle ou il se trouve, et la question de la
+     * faible visibilite s'y pose quand meme.
+     */
+    @GetMapping("/lvp")
+    public LegLvpDto lvp(@RequestParam(name = "stations") List<String> stations) {
+        return legLvpService.assessStations(TenantContext.require(), stations);
     }
 }

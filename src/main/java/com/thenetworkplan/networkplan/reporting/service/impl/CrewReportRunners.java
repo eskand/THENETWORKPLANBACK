@@ -3,6 +3,7 @@ package com.thenetworkplan.networkplan.reporting.service.impl;
 import com.thenetworkplan.networkplan.camo.service.CamoService;
 import com.thenetworkplan.networkplan.crew.dto.CrewDutyDto;
 import com.thenetworkplan.networkplan.crew.dto.CrewExpiryDto;
+import com.thenetworkplan.networkplan.crew.dto.FtlExceedanceDto;
 import com.thenetworkplan.networkplan.crew.dto.CrewMemberDto;
 import com.thenetworkplan.networkplan.crew.dto.LegCrewDto;
 import com.thenetworkplan.networkplan.crew.dto.PersonDto;
@@ -998,7 +999,7 @@ public class CrewReportRunners {
 
             @Override
             public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
-                List<CrewDutyDto> duties = dutyService.findDuties(tenantId, from, to);
+                List<CrewDutyDto> duties = onDuty(dutyService, tenantId, from, to);
                 long total = duties.stream().mapToLong(CrewDutyDto::dutyMinutes).sum();
                 CrewDutyDto longest = duties.stream()
                         .max(Comparator.comparingLong(CrewDutyDto::dutyMinutes)).orElse(null);
@@ -1033,7 +1034,7 @@ public class CrewReportRunners {
 
             @Override
             public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
-                List<CrewDutyDto> duties = dutyService.findDuties(tenantId, from, to);
+                List<CrewDutyDto> duties = onDuty(dutyService, tenantId, from, to);
                 double[] byHour = new double[24];
                 duties.forEach(duty -> byHour[reportMinute(duty) / 60]++);
                 List<String> hours = new ArrayList<>(24);
@@ -1220,7 +1221,7 @@ public class CrewReportRunners {
 
             @Override
             public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                return dutyService.findDuties(tenantId, from, to).stream()
+                return onDuty(dutyService, tenantId, from, to).stream()
                         .sorted(Comparator.comparingLong(duty -> margin(duty) == null
                                 ? Long.MAX_VALUE : margin(duty)))
                         .map(duty -> List.of(
@@ -1241,7 +1242,7 @@ public class CrewReportRunners {
 
             @Override
             public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
-                List<CrewDutyDto> duties = dutyService.findDuties(tenantId, from, to);
+                List<CrewDutyDto> duties = onDuty(dutyService, tenantId, from, to);
                 List<CrewDutyDto> assessed = duties.stream()
                         .filter(duty -> duty.maxFdpMinutes() != null).toList();
                 long over = assessed.stream().filter(duty -> margin(duty) < 0).count();
@@ -1250,7 +1251,10 @@ public class CrewReportRunners {
                 int average = assessed.isEmpty() ? 0 : (int) Math.round(assessed.stream()
                         .mapToDouble(duty -> duty.dutyMinutes() * 100d / duty.maxFdpMinutes())
                         .average().orElse(0));
-                List<Rolling> breaches = rolling(duties);
+                List<FtlExceedanceDto> rollingBreaches =
+                        dutyService.findExceedances(tenantId, from, to).stream()
+                                .filter(breach -> breach.rule().startsWith("ORO.FTL.210"))
+                                .toList();
                 CrewDutyDto tightest = assessed.stream()
                         .min(Comparator.comparingLong(CrewReportRunners::margin)).orElse(null);
 
@@ -1264,9 +1268,9 @@ public class CrewReportRunners {
                                 over == 0 ? "good" : "bad"),
                         Rp.kpi("Within 1 hour of limit", String.valueOf(tight),
                                 "little room for delay", Rp.countTone(tight)),
-                        Rp.kpi("Rolling limit breaches", String.valueOf(breaches.size()),
+                        Rp.kpi("Rolling limit breaches", String.valueOf(rollingBreaches.size()),
                                 "60 h / 7 days or 190 h / 28 days",
-                                breaches.isEmpty() ? "good" : "bad"),
+                                rollingBreaches.isEmpty() ? "good" : "bad"),
                         Rp.kpi("Tightest margin",
                                 tightest == null ? Rp.EMPTY : Rp.hhmm(margin(tightest)),
                                 tightest == null ? ""
@@ -1277,7 +1281,7 @@ public class CrewReportRunners {
 
             @Override
             public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
-                List<CrewDutyDto> duties = dutyService.findDuties(tenantId, from, to);
+                List<CrewDutyDto> duties = onDuty(dutyService, tenantId, from, to);
                 List<CrewDutyDto> assessed = duties.stream()
                         .filter(duty -> duty.maxFdpMinutes() != null)
                         .sorted(Comparator.comparingLong(CrewReportRunners::margin))
@@ -1364,25 +1368,25 @@ public class CrewReportRunners {
 
             @Override
             public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                return violations(dutyService.findDuties(tenantId, from, to)).stream()
+                return dutyService.findExceedances(tenantId, from, to).stream()
                         .map(breach -> List.of(
-                                breach.day.toString(),
-                                breach.crew,
-                                breach.rule,
-                                breach.detail,
-                                Rp.hhmm(breach.overMinutes),
-                                breach.severity))
+                                breach.day().toString(),
+                                breach.crewName(),
+                                breach.rule(),
+                                breach.detail(),
+                                Rp.hhmm(breach.overMinutes()),
+                                breach.severity()))
                         .toList();
             }
 
             @Override
             public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
-                List<CrewDutyDto> duties = dutyService.findDuties(tenantId, from, to);
-                List<Breach> breaches = violations(duties);
+                List<CrewDutyDto> duties = onDuty(dutyService, tenantId, from, to);
+                List<FtlExceedanceDto> breaches = dutyService.findExceedances(tenantId, from, to);
                 long high = breaches.stream()
-                        .filter(breach -> "High".equals(breach.severity)).count();
-                List<Rp.Bucket> byRule = Rp.tally(breaches, breach -> breach.rule);
-                List<Rp.Bucket> byCrew = Rp.tally(breaches, breach -> breach.crew);
+                        .filter(breach -> "High".equals(breach.severity())).count();
+                List<Rp.Bucket> byRule = Rp.tally(breaches, FtlExceedanceDto::rule);
+                List<Rp.Bucket> byCrew = Rp.tally(breaches, FtlExceedanceDto::crewName);
 
                 if (breaches.isEmpty()) {
                     return List.of(
@@ -1415,16 +1419,17 @@ public class CrewReportRunners {
 
             @Override
             public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
-                List<Breach> breaches = violations(dutyService.findDuties(tenantId, from, to));
+                List<FtlExceedanceDto> breaches =
+                        dutyService.findExceedances(tenantId, from, to);
                 if (breaches.isEmpty()) {
                     return List.of();
                 }
+                List<Rp.Bucket> bySeverity = Rp.tally(breaches, FtlExceedanceDto::severity);
                 return List.of(
                         Rp.hbar("rpc1", "Violations by rule", "twothirds",
-                                Rp.tally(breaches, breach -> breach.rule), Rp.RED),
-                        Rp.donut("rpc2", "Severity", "third",
-                                Rp.tally(breaches, breach -> breach.severity),
-                                Rp.tally(breaches, breach -> breach.severity).stream()
+                                Rp.tally(breaches, FtlExceedanceDto::rule), Rp.RED),
+                        Rp.donut("rpc2", "Severity", "third", bySeverity,
+                                bySeverity.stream()
                                         .map(bucket -> "High".equals(bucket.key())
                                                 ? Rp.RED : Rp.AMBER).toList()));
             }
@@ -1584,10 +1589,26 @@ public class CrewReportRunners {
         return out;
     }
 
+    /**
+     * The periods that actually consume duty time.
+     *
+     * <p>Rest and days off are stored as duty periods too — that is how a
+     * roster records them — and every FTL figure has to leave them out. A
+     * rolling 28-day total that summed eighteen-hour rest periods would put the
+     * whole crew over the 190-hour ceiling and bury the one duty that really
+     * breached it.
+     */
+    private static List<CrewDutyDto> onDuty(CrewDutyService dutyService, UUID tenantId,
+                                            LocalDate from, LocalDate to) {
+        return dutyService.findDuties(tenantId, from, to).stream()
+                .filter(CrewDutyDto::countsAsDuty)
+                .toList();
+    }
+
     private static Map<UUID, Long> dutyMinutesByPerson(CrewDutyService dutyService, UUID tenantId,
                                                        LocalDate from, LocalDate to) {
         Map<UUID, Long> minutes = new HashMap<>();
-        dutyService.findDuties(tenantId, from, to)
+        onDuty(dutyService, tenantId, from, to)
                 .forEach(duty -> minutes.merge(duty.personId(), duty.dutyMinutes(), Long::sum));
         return minutes;
     }
@@ -1595,7 +1616,7 @@ public class CrewReportRunners {
     private static Map<LocalDate, Long> dutyMinutesByDay(CrewDutyService dutyService, UUID tenantId,
                                                          LocalDate from, LocalDate to) {
         Map<LocalDate, Long> minutes = new HashMap<>();
-        dutyService.findDuties(tenantId, from, to).forEach(duty ->
+        onDuty(dutyService, tenantId, from, to).forEach(duty ->
                 minutes.merge(duty.reportAt().toLocalDate(), duty.dutyMinutes(), Long::sum));
         return minutes;
     }
@@ -1716,105 +1737,15 @@ public class CrewReportRunners {
 
     /* ── FTL arithmetic ───────────────────────────────────────────────────── */
 
-    /** One breach, with the clause it breached and by how much. */
-    private record Breach(LocalDate day, String crew, String rule, String detail,
-                          long overMinutes, String severity) {
-    }
-
-    /** One rolling-window exceedance. */
-    private record Rolling(LocalDate day, String crew, long week, long month) {
-    }
-
-    private static List<Breach> violations(List<CrewDutyDto> duties) {
-        List<Breach> out = new ArrayList<>();
-
-        for (CrewDutyDto duty : duties) {
-            if (duty.maxFdpMinutes() != null && duty.dutyMinutes() > duty.maxFdpMinutes()) {
-                out.add(new Breach(duty.reportAt().toLocalDate(), duty.fullName(),
-                        "ORO.FTL.205 — max daily FDP",
-                        "FDP " + Rp.hhmm(duty.dutyMinutes()) + " against a maximum of "
-                                + Rp.hhmm(duty.maxFdpMinutes()) + " for "
-                                + Math.max(1, duty.sectors()) + " sector(s) reporting at "
-                                + Rp.hm(duty.reportAt()),
-                        duty.dutyMinutes() - duty.maxFdpMinutes(), "High"));
-            }
-
-            /* ORO.FTL.235(a) : douze heures, ou la duree de la garde
-               precedente si elle est plus longue. */
-            if (duty.restBeforeMinutes() != null) {
-                long floor = Math.max(12 * 60, previousDuty(duties, duty));
-                if (duty.restBeforeMinutes() < floor) {
-                    out.add(new Breach(duty.reportAt().toLocalDate(), duty.fullName(),
-                            "ORO.FTL.235(a) — minimum rest",
-                            "Rest of " + Rp.hhmm(duty.restBeforeMinutes())
-                                    + "; minimum required " + Rp.hhmm(floor),
-                            floor - duty.restBeforeMinutes(), "High"));
-                }
-            }
-        }
-
-        for (Rolling breach : rolling(duties)) {
-            if (breach.week > FdpTable.DUTY_CEILING_7_DAYS_MINUTES) {
-                out.add(new Breach(breach.day, breach.crew,
-                        "ORO.FTL.210(a)(1) — 60 h / 7 days",
-                        "Rolling 7-day duty of " + Rp.hhmm(breach.week) + " against a 60:00 ceiling",
-                        breach.week - FdpTable.DUTY_CEILING_7_DAYS_MINUTES, "Medium"));
-            }
-            if (breach.month > FdpTable.DUTY_CEILING_28_DAYS_MINUTES) {
-                out.add(new Breach(breach.day, breach.crew,
-                        "ORO.FTL.210(a)(2) — 190 h / 28 days",
-                        "Rolling 28-day duty of " + Rp.hhmm(breach.month)
-                                + " against a 190:00 ceiling",
-                        breach.month - FdpTable.DUTY_CEILING_28_DAYS_MINUTES, "Medium"));
-            }
-        }
-
-        out.sort(Comparator.comparing((Breach breach) -> breach.day).reversed());
-        return out;
-    }
-
     /**
-     * The rolling 7 and 28-day duty totals, per person per day.
+     * L'arithmetique FTL vit dans le module equipage, pas ici.
      *
-     * <p>Only days on which the window is exceeded are returned: a list of every
-     * person-day would be the roster, not a finding.
+     * <p>Elle etait recopiee dans ce fichier : deux copies, deux reponses le
+     * jour ou l'une des deux bougerait. {@code CrewDutyService.findExceedances}
+     * est desormais le seul endroit ou ORO.FTL.205, 210 et 235 sont appliques,
+     * et la feuille FTL, le rapport des violations et la banniere du Safety
+     * Manager lisent tous les trois le meme resultat.
      */
-    private static List<Rolling> rolling(List<CrewDutyDto> duties) {
-        Map<String, Map<LocalDate, Long>> byCrew = new LinkedHashMap<>();
-        duties.forEach(duty -> byCrew
-                .computeIfAbsent(duty.fullName(), ignored -> new LinkedHashMap<>())
-                .merge(duty.reportAt().toLocalDate(), duty.dutyMinutes(), Long::sum));
-
-        List<Rolling> out = new ArrayList<>();
-        byCrew.forEach((crew, days) -> days.keySet().stream().sorted().forEach(day -> {
-            long week = sumBack(days, day, 6);
-            long month = sumBack(days, day, 27);
-            if (week > FdpTable.DUTY_CEILING_7_DAYS_MINUTES
-                    || month > FdpTable.DUTY_CEILING_28_DAYS_MINUTES) {
-                out.add(new Rolling(day, crew, week, month));
-            }
-        }));
-        return out;
-    }
-
-    private static long sumBack(Map<LocalDate, Long> days, LocalDate day, int back) {
-        long total = 0;
-        for (int step = 0; step <= back; step++) {
-            total += days.getOrDefault(day.minusDays(step), 0L);
-        }
-        return total;
-    }
-
-    /** The duty immediately before this one, for the same person, in minutes. */
-    private static long previousDuty(List<CrewDutyDto> duties, CrewDutyDto duty) {
-        return duties.stream()
-                .filter(other -> other.personId().equals(duty.personId())
-                        && other.offDutyAt().isBefore(duty.reportAt()))
-                .max(Comparator.comparing(CrewDutyDto::offDutyAt))
-                .map(CrewDutyDto::dutyMinutes)
-                .orElse(0L);
-    }
-
     private static Long margin(CrewDutyDto duty) {
         return duty.maxFdpMinutes() == null ? null : duty.maxFdpMinutes() - duty.dutyMinutes();
     }

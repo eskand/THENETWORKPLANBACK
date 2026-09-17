@@ -66,6 +66,16 @@ public class Investigation extends BaseEntity {
     @Column(name = "contributing_factors")
     private String contributingFactors;
 
+    /**
+     * How far the investigation has actually got, 0 to 100.
+     *
+     * <p>Declared by the investigator, not derived from the calendar: an
+     * investigation three weeks into a four-week target is not 75 % done, and a
+     * bar that said so would be the screen inventing progress nobody reported.
+     */
+    @Column(name = "progress_percent", nullable = false)
+    private short progressPercent;
+
     public boolean isOpen() {
         return !"CLOSED".equals(status);
     }

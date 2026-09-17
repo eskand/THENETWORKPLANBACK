@@ -1,306 +1,45 @@
 package com.thenetworkplan.networkplan.reporting.service.impl;
 
+import com.thenetworkplan.networkplan.camo.dto.FleetStatusRowDto;
 import com.thenetworkplan.networkplan.camo.service.CamoService;
-import com.thenetworkplan.networkplan.crew.dto.PersonDto;
-import com.thenetworkplan.networkplan.crew.service.CrewAssignmentService;
-import com.thenetworkplan.networkplan.crew.service.CrewPeopleService;
 import com.thenetworkplan.networkplan.ops.dto.LegDto;
 import com.thenetworkplan.networkplan.ops.service.LegService;
 import com.thenetworkplan.networkplan.reporting.dto.ReportDtos.ReportChartDto;
 import com.thenetworkplan.networkplan.reporting.dto.ReportDtos.ReportKpiDto;
 import com.thenetworkplan.networkplan.reporting.dto.ReportDtos.ReportSeriesDto;
 import com.thenetworkplan.networkplan.reporting.service.ReportRunner;
-import com.thenetworkplan.networkplan.safety.service.SafetyOverviewService;
-import com.thenetworkplan.networkplan.safety.service.SmsRegisterService;
+import com.thenetworkplan.networkplan.safety.dto.SafetyDtos.OccurrenceDto;
+import com.thenetworkplan.networkplan.safety.service.SafetyService;
+import com.thenetworkplan.networkplan.techlog.dto.TechLogBoardDto.DefectRowDto;
 import com.thenetworkplan.networkplan.techlog.service.TechLogService;
-import java.time.Duration;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * The crew, maintenance, fleet and safety reports of the approved catalogue.
+ * Maintenance, fleet and safety — the four reports those three modules answer.
  *
- * <p>Each runner asks the owning module's service. None of them reads another
- * schema: a crew report that went straight to {@code crew.duty_periods} would
- * be a second opinion about what a duty period is, and the two would diverge on
- * the first FTL amendment.
+ * <p><b>Each runner asks the owning module's service.</b> A defect report that
+ * went straight to {@code camo.defects} would be a second opinion about what
+ * « deferred » means, and the two would drift apart the first time the tech log
+ * changed a rule.
+ *
+ * <p><b>Two of these read forward, not back.</b> Airworthiness and the aircraft
+ * register answer what falls due and what is serviceable — questions about the
+ * future. The period above them is the horizon, not a filter on past events,
+ * and each note says so rather than letting an operator assume otherwise.
  */
 @Configuration
 public class CatalogueReportRunners {
 
-    private static final String GOLD = "#a9811d";
-    private static final String NAVY = "#1B2D6B";
-    private static final String BLUE = "#2f6fb0";
-    private static final String GREEN = "#1f9d5c";
-    private static final String RED = "#C8202F";
-
-    /* ── CREW — block time per person ─────────────────────────────────── */
-
-    @Bean
-    ReportRunner crewBlockPerPersonReport(CrewPeopleService peopleService) {
-        return new ReportRunner() {
-            @Override
-            public String code() {
-                return "CREW-BLOCK";
-            }
-
-            @Override
-            public String module() {
-                return "Crew";
-            }
-
-            @Override
-            public String subtitle() {
-                return "Block hours flown by each crew member";
-            }
-
-            @Override
-            public List<String> columns() {
-                return List.of("Name", "Role", "Base", "Block 7 d", "Block 28 d",
-                        "Block 365 d", "Type ratings");
-            }
-
-            @Override
-            public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                return people(peopleService, tenantId).stream()
-                        .sorted(Comparator.comparingLong(PersonDto::blockMinutes28d).reversed())
-                        .map(person -> List.of(
-                                person.fullName(),
-                                titleish(person.mainRole()),
-                                nullSafe(person.baseIcao()),
-                                hhmm(person.blockMinutes7d()),
-                                hhmm(person.blockMinutes28d()),
-                                hhmm(person.blockMinutes365d()),
-                                String.join(", ", person.typeRatings())))
-                        .toList();
-            }
-
-            @Override
-            public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
-                List<PersonDto> people = people(peopleService, tenantId);
-                long total = people.stream().mapToLong(PersonDto::blockMinutes28d).sum();
-                PersonDto busiest = people.stream()
-                        .max(Comparator.comparingLong(PersonDto::blockMinutes28d)).orElse(null);
-                return List.of(
-                        kpi("Crew on the register", String.valueOf(people.size()),
-                                "active licence holders", "neutral"),
-                        kpi("Block flown, 28 days", hhmm(total), "all crew together", "good"),
-                        kpi("Average per head",
-                                hhmm(people.isEmpty() ? 0 : total / people.size()),
-                                "over 28 days", "neutral"),
-                        kpi("Busiest", busiest == null ? "—" : busiest.fullName(),
-                                busiest == null ? "no data" : hhmm(busiest.blockMinutes28d()),
-                                "warn"));
-            }
-
-            @Override
-            public String note() {
-                return "The rolling windows are the ones the FTL scheme itself uses — 7, 28 and "
-                        + "365 days — and they are maintained on those periods whatever window is "
-                        + "chosen above. They are counters, not a query over the selected dates.";
-            }
-        };
-    }
-
-    /* ── CREW — block time by function ────────────────────────────────── */
-
-    @Bean
-    ReportRunner blockByFunctionReport(LegService legService,
-                                       CrewAssignmentService assignmentService) {
-        return new ReportRunner() {
-            @Override
-            public String code() {
-                return "CREW-FUNC";
-            }
-
-            @Override
-            public String module() {
-                return "Crew";
-            }
-
-            @Override
-            public String subtitle() {
-                return "Block hours by the seat occupied, not by the person";
-            }
-
-            @Override
-            public List<String> columns() {
-                return List.of("Function", "Sectors crewed", "Block (h:mm)", "Share");
-            }
-
-            @Override
-            public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                Map<String, long[]> byFunction = new LinkedHashMap<>();
-                long totalBlock = 0;
-
-                for (LegDto leg : legService.findProgrammeRange(tenantId, from, to)) {
-                    var crew = assignmentService.findByLeg(tenantId, leg.id(),
-                            leg.std().atZoneSameInstant(ZoneOffset.UTC).toLocalDate());
-                    if (crew == null) {
-                        continue;
-                    }
-                    long block = blockMinutes(leg);
-                    totalBlock += block;
-                    for (var member : crew.members()) {
-                        long[] cell = byFunction.computeIfAbsent(
-                                nullSafe(member.seat()), key -> new long[2]);
-                        cell[0]++;
-                        cell[1] += block;
-                    }
-                }
-
-                long finalTotal = totalBlock;
-                return byFunction.entrySet().stream()
-                        .sorted(Comparator.<Map.Entry<String, long[]>>comparingLong(
-                                entry -> entry.getValue()[1]).reversed())
-                        .map(entry -> List.of(
-                                titleish(entry.getKey()),
-                                String.valueOf(entry.getValue()[0]),
-                                hhmm(entry.getValue()[1]),
-                                finalTotal == 0 ? "—"
-                                        : Math.round(entry.getValue()[1] * 100f / finalTotal) + "%"))
-                        .toList();
-            }
-
-            @Override
-            public String note() {
-                return "Block time is counted once per seat, so the total across functions is a "
-                        + "multiple of the sector block time — a two-crew sector contributes its "
-                        + "block twice. That is the figure a training department needs; it is not "
-                        + "fleet block time.";
-            }
-        };
-    }
-
-    /* ── CREW — the register ──────────────────────────────────────────── */
-
-    @Bean
-    ReportRunner crewMembersReport(CrewPeopleService peopleService) {
-        return new ReportRunner() {
-            @Override
-            public String code() {
-                return "CREW-MEMBERS";
-            }
-
-            @Override
-            public String module() {
-                return "Crew";
-            }
-
-            @Override
-            public String subtitle() {
-                return "The register, with the qualification that expires first";
-            }
-
-            @Override
-            public List<String> columns() {
-                return List.of("Staff no", "Name", "Role", "Base", "Licence", "Medical",
-                        "Training", "Document status", "Type ratings", "Active");
-            }
-
-            @Override
-            public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                return peopleService.findAll(tenantId, null, null, false).stream()
-                        .map(person -> List.of(
-                                nullSafe(person.staffNo()),
-                                person.fullName(),
-                                titleish(person.mainRole()),
-                                nullSafe(person.baseIcao()),
-                                nullSafe(person.licenceExpiry()),
-                                nullSafe(person.medicalExpiry()),
-                                nullSafe(person.trainingExpiry()),
-                                nullSafe(person.documentStatus()),
-                                String.join(", ", person.typeRatings()),
-                                person.active() ? "Yes" : "No"))
-                        .toList();
-            }
-
-            @Override
-            public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
-                List<PersonDto> all = peopleService.findAll(tenantId, null, null, false);
-                long expired = all.stream()
-                        .filter(person -> "EXPIRED".equals(person.documentStatus())).count();
-                long expiring = all.stream()
-                        .filter(person -> "EXPIRING".equals(person.documentStatus())).count();
-                return List.of(
-                        kpi("On the register", String.valueOf(all.size()), "including inactive",
-                                "neutral"),
-                        kpi("Not current", String.valueOf(expired),
-                                expired == 0 ? "none" : "must not be rostered",
-                                expired == 0 ? "good" : "bad"),
-                        kpi("Expiring", String.valueOf(expiring), "within the alert window",
-                                expiring == 0 ? "good" : "warn"),
-                        kpi("Active", String.valueOf(all.stream().filter(PersonDto::active).count()),
-                                "available to roster", "good"));
-            }
-
-            @Override
-            public String note() {
-                return "Document status is the worst of the three clocks — licence, medical and "
-                        + "recurrent training — because the earliest of them is what stops the "
-                        + "person flying.";
-            }
-        };
-    }
-
-    /* ── CREW — expiries with days remaining ──────────────────────────── */
-
-    @Bean
-    ReportRunner crewDaysReport(CrewPeopleService peopleService) {
-        return new ReportRunner() {
-            @Override
-            public String code() {
-                return "CREW-DAYS";
-            }
-
-            @Override
-            public String module() {
-                return "Crew";
-            }
-
-            @Override
-            public String subtitle() {
-                return "Days to the next expiry, per crew member";
-            }
-
-            @Override
-            public List<String> columns() {
-                return List.of("Name", "Role", "Document", "Expires", "Days remaining", "State");
-            }
-
-            @Override
-            public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                int horizon = (int) Math.max(1, from.datesUntil(to.plusDays(1)).count());
-                return peopleService.findExpiring(tenantId, horizon).stream()
-                        .map(expiry -> List.of(
-                                nullSafe(expiry.fullName()),
-                                titleish(expiry.mainRole()),
-                                nullSafe(expiry.kind()) + " — " + nullSafe(expiry.subject()),
-                                nullSafe(expiry.expiresOn()),
-                                String.valueOf(daysTo(expiry.expiresOn())),
-                                nullSafe(expiry.status())))
-                        .toList();
-            }
-
-            @Override
-            public String note() {
-                return "The window above is read as the horizon: a ninety-day window lists what "
-                        + "expires within ninety days. Anything already expired is listed first "
-                        + "with a negative count, because it is the only urgent line.";
-            }
-        };
-    }
-
-    /* ── MAINTENANCE — the defect record ──────────────────────────────── */
+    /* ══════════════ TECH LOG — defects and deferrals ═════════════════════ */
 
     @Bean
     ReportRunner defectReport(TechLogService techLogService) {
@@ -317,63 +56,117 @@ public class CatalogueReportRunners {
 
             @Override
             public String subtitle() {
-                return "Defects raised, deferred and rectified";
+                return "Open, deferred (MEL) and closed defects, by system and aircraft";
+            }
+
+            @Override
+            public String scope() {
+                return "Fleet + period on the date the defect was raised";
             }
 
             @Override
             public List<String> columns() {
-                return List.of("Aircraft", "Type", "ATA", "System", "Defect", "Reported",
-                        "Reported by", "Status", "MEL reference", "Rectification");
+                return List.of("Raised", "Tail", "Type", "ATA", "System", "Defect", "Status",
+                        "MEL ref", "Reported by", "Flight", "Rectification");
             }
 
             @Override
             public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                return techLogService.findBoard(tenantId).defects().stream()
-                        .filter(defect -> within(defect.reportedAt(), from, to))
+                return defects(techLogService, tenantId, from, to).stream()
                         .map(defect -> List.of(
-                                nullSafe(defect.registration()),
-                                nullSafe(defect.icaoType()),
-                                nullSafe(defect.ataChapter()),
-                                nullSafe(defect.system()),
-                                nullSafe(defect.description()),
                                 date(defect.reportedAt()),
-                                nullSafe(defect.reportedByName()),
-                                nullSafe(defect.status()),
-                                nullSafe(defect.melReference()),
-                                nullSafe(defect.correctiveAction())))
+                                Rp.text(defect.registration()),
+                                Rp.text(defect.icaoType()),
+                                Rp.text(defect.ataChapter()),
+                                Rp.text(defect.system()),
+                                Rp.text(defect.description()),
+                                Rp.text(defect.status()),
+                                Rp.text(defect.melReference()),
+                                Rp.text(defect.reportedByName()),
+                                Rp.text(defect.flightRef()),
+                                Rp.text(defect.correctiveAction())))
                         .toList();
             }
 
             @Override
             public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
                 var board = techLogService.findBoard(tenantId);
+                List<DefectRowDto> rows = defects(techLogService, tenantId, from, to);
+                long open = rows.stream().filter(defect -> is(defect, "OPEN")).count();
+                long deferred = rows.stream().filter(defect -> is(defect, "DEFERRED")).count();
+                long closed = rows.stream().filter(defect -> is(defect, "CLOSED")).count();
+                long affected = rows.stream()
+                        .filter(defect -> is(defect, "OPEN") || is(defect, "DEFERRED"))
+                        .map(DefectRowDto::registration).distinct().count();
+                List<Rp.Bucket> byAta = Rp.tally(rows, CatalogueReportRunners::ata);
+
                 return List.of(
-                        kpi("Open", String.valueOf(board.open()),
-                                board.openAircraft() + " aircraft",
-                                board.open() == 0 ? "good" : "bad"),
-                        kpi("Deferred under MEL", String.valueOf(board.deferred()),
-                                board.deferredRegistrations().isEmpty()
-                                        ? "none" : String.join(", ", board.deferredRegistrations()),
-                                board.deferred() == 0 ? "good" : "warn"),
-                        kpi("Repeat defects", String.valueOf(board.repeatDefects()),
+                        Rp.kpi("Open defects", String.valueOf(open),
+                                rows.stream().filter(defect -> is(defect, "OPEN"))
+                                        .map(DefectRowDto::registration).distinct().count()
+                                        + " aircraft",
+                                open == 0 ? "good" : "bad"),
+                        Rp.kpi("Deferred (MEL)", String.valueOf(deferred),
+                                deferred == 0 ? "none" : "dispatch under a deferral",
+                                deferred == 0 ? "good" : "warn"),
+                        Rp.kpi("Closed", String.valueOf(closed), "rectified and signed off",
+                                "good"),
+                        Rp.kpi("Aircraft affected", affected + " / " + board.fleetSize(),
+                                "open or deferred items"),
+                        Rp.kpi("Most affected system",
+                                byAta.isEmpty() ? Rp.EMPTY : byAta.get(0).key(),
+                                byAta.isEmpty() ? "no data" : byAta.get(0).count() + " entries",
+                                "warn"),
+                        Rp.kpi("Repeat defects", String.valueOf(board.repeatDefects()),
                                 "same ATA within 30 days",
-                                board.repeatDefects() == 0 ? "good" : "bad"),
-                        kpi("Average time to close",
-                                board.averageDaysToClose() == null
-                                        ? "—" : board.averageDaysToClose() + " days",
-                                "raised to rectified", "neutral"));
+                                board.repeatDefects() == 0 ? "good" : "bad"));
+            }
+
+            @Override
+            public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
+                List<DefectRowDto> rows = defects(techLogService, tenantId, from, to);
+                List<Rp.Bucket> byTail = Rp.tally(rows, DefectRowDto::registration);
+
+                return List.of(
+                        Rp.donut("rpc1", "Defects by status", "third",
+                                List.of(new Rp.Bucket("Open", rows.stream()
+                                                .filter(defect -> is(defect, "OPEN")).count()),
+                                        new Rp.Bucket("Deferred (MEL)", rows.stream()
+                                                .filter(defect -> is(defect, "DEFERRED")).count()),
+                                        new Rp.Bucket("Closed", rows.stream()
+                                                .filter(defect -> is(defect, "CLOSED")).count())),
+                                List.of(Rp.RED, Rp.AMBER, Rp.GREEN)),
+                        Rp.hbar("rpc2", "Defects by ATA chapter", "twothirds",
+                                Rp.topN(Rp.tally(rows, CatalogueReportRunners::ata), 12), Rp.NAVY2),
+                        Rp.bar("rpc3", "Defects by aircraft", "half", byTail, Rp.BLUE),
+                        Rp.stacked("rpc4", "Open vs deferred by aircraft", "half",
+                                byTail.stream().map(Rp.Bucket::key).toList(),
+                                List.of(
+                                        Rp.series("Open", byTail.stream()
+                                                .map(bucket -> count(rows, bucket.key(), "OPEN"))
+                                                .toList(), Rp.RED),
+                                        Rp.series("Deferred", byTail.stream()
+                                                .map(bucket -> count(rows, bucket.key(), "DEFERRED"))
+                                                .toList(), Rp.AMBER),
+                                        Rp.series("Closed", byTail.stream()
+                                                .map(bucket -> count(rows, bucket.key(), "CLOSED"))
+                                                .toList(), Rp.GREEN))));
             }
 
             @Override
             public String note() {
                 return "Filtered on the date the defect was raised, not the date it was closed: a "
                         + "defect raised inside the window and still open is the one that matters, "
-                        + "and filtering on closure would hide it.";
+                        + "and filtering on closure would hide exactly those. Deferred items carry "
+                        + "an MEL reference and a rectification interval — cross-check them against "
+                        + "the MEL / CDL module before dispatch. A defect with no ATA chapter on "
+                        + "file is listed under \"—\" rather than being assigned to the nearest "
+                        + "system.";
             }
         };
     }
 
-    /* ── MAINTENANCE — airworthiness ──────────────────────────────────── */
+    /* ══════════════ CAMO — airworthiness status ══════════════════════════ */
 
     @Bean
     ReportRunner airworthinessReport(CamoService camoService) {
@@ -390,67 +183,137 @@ public class CatalogueReportRunners {
 
             @Override
             public String subtitle() {
-                return "Certificates, directives and life-limited parts";
+                return "ARC validity, AD/SB status, life-limited parts and next checks";
+            }
+
+            @Override
+            public String scope() {
+                return "Fleet applied; period is the expiry / due window";
             }
 
             @Override
             public List<String> columns() {
-                return List.of("Registration", "Type", "Status", "ARC certificate", "ARC expiry",
-                        "Days to ARC", "Open AD/SB", "Overdue tasks", "Critical LLPs",
-                        "Open work orders");
+                return List.of("Tail", "Type", "ARC certificate", "ARC expiry", "Days left",
+                        "Next check", "Due on", "Days to check", "AD/SB open", "Overdue tasks",
+                        "Critical LLPs", "Lowest LLP", "Status");
             }
 
             @Override
             public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
                 return camoService.findFleetStatus(tenantId).stream()
                         .sorted(Comparator.comparing(row -> row.arcDaysLeft() == null
-                                ? Integer.MAX_VALUE : row.arcDaysLeft()))
+                                ? Long.MAX_VALUE : row.arcDaysLeft()))
                         .map(row -> List.of(
                                 row.registration(),
-                                nullSafe(row.icaoType()),
-                                nullSafe(row.status()),
-                                nullSafe(row.arcCertificateNo()),
-                                nullSafe(row.arcExpiresOn()),
-                                nullSafe(row.arcDaysLeft()),
+                                Rp.text(row.icaoType()),
+                                Rp.text(row.arcCertificateNo()),
+                                Rp.iso(row.arcExpiresOn()),
+                                row.arcDaysLeft() == null ? Rp.EMPTY
+                                        : String.valueOf(row.arcDaysLeft()),
+                                Rp.text(row.nextDueCode()),
+                                Rp.iso(row.nextDueOn()),
+                                row.nextDueInDays() == null ? Rp.EMPTY
+                                        : String.valueOf(row.nextDueInDays()),
                                 String.valueOf(row.openDirectives()),
                                 String.valueOf(row.overdueTasks()),
                                 String.valueOf(row.criticalLlps()),
-                                String.valueOf(row.openWorkOrders())))
+                                row.worstLlpPercent() == null ? Rp.EMPTY
+                                        : row.worstLlpPercent() + " %",
+                                Rp.text(row.status())))
                         .toList();
             }
 
             @Override
             public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
-                var fleet = camoService.findFleetStatus(tenantId);
+                List<FleetStatusRowDto> fleet = camoService.findFleetStatus(tenantId);
+                long arc90 = fleet.stream()
+                        .filter(row -> row.arcDaysLeft() != null && row.arcDaysLeft() < 90).count();
                 long expired = fleet.stream()
                         .filter(row -> row.arcDaysLeft() != null && row.arcDaysLeft() < 0).count();
-                long overdue = fleet.stream().mapToInt(row -> row.overdueTasks()).sum();
+                int open = fleet.stream().mapToInt(FleetStatusRowDto::openDirectives).sum();
+                int overdue = fleet.stream().mapToInt(FleetStatusRowDto::overdueTasks).sum();
+                long dueInPeriod = fleet.stream()
+                        .filter(row -> row.arcExpiresOn() != null
+                                && !row.arcExpiresOn().isBefore(from)
+                                && !row.arcExpiresOn().isAfter(to)).count();
+                FleetStatusRowDto worstLlp = fleet.stream()
+                        .filter(row -> row.worstLlpPercent() != null)
+                        .min(Comparator.comparingInt(FleetStatusRowDto::worstLlpPercent))
+                        .orElse(null);
+                long serviceable = fleet.stream()
+                        .filter(row -> "SERVICEABLE".equalsIgnoreCase(row.status())
+                                || "OK".equalsIgnoreCase(row.status())).count();
+
                 return List.of(
-                        kpi("Fleet", String.valueOf(fleet.size()), "registrations managed",
-                                "neutral"),
-                        kpi("ARC expired", String.valueOf(expired),
-                                expired == 0 ? "none" : "not airworthy",
-                                expired == 0 ? "good" : "bad"),
-                        kpi("Overdue tasks", String.valueOf(overdue), "across the fleet",
+                        Rp.kpi("ARC expiring < 90 d", String.valueOf(arc90),
+                                expired == 0 ? "none expired" : expired + " already expired",
+                                arc90 == 0 ? "good" : expired == 0 ? "warn" : "bad"),
+                        Rp.kpi("AD/SB open", String.valueOf(open), "across the fleet",
+                                Rp.countTone(open)),
+                        Rp.kpi("Overdue tasks", String.valueOf(overdue),
+                                overdue == 0 ? "none" : "immediate action",
                                 overdue == 0 ? "good" : "bad"),
-                        kpi("Critical LLPs",
-                                String.valueOf(fleet.stream().mapToInt(row -> row.criticalLlps()).sum()),
-                                "under 10% life remaining", "warn"));
+                        Rp.kpi("Airworthy", serviceable + " / " + fleet.size(),
+                                Rp.pct(serviceable, fleet.size()) + " % of the fleet",
+                                serviceable == fleet.size() ? "good" : "warn",
+                                Rp.pct(serviceable, fleet.size())),
+                        Rp.kpi("ARC due in period", String.valueOf(dueInPeriod), from + " → " + to,
+                                Rp.countTone(dueInPeriod)),
+                        Rp.kpi("Worst LLP margin",
+                                worstLlp == null ? Rp.EMPTY : worstLlp.worstLlpPercent() + " %",
+                                worstLlp == null ? "no data" : worstLlp.registration(),
+                                worstLlp != null && worstLlp.worstLlpPercent() < 30
+                                        ? "bad" : "warn"));
+            }
+
+            @Override
+            public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
+                List<FleetStatusRowDto> fleet = camoService.findFleetStatus(tenantId);
+                List<String> tails = fleet.stream().map(FleetStatusRowDto::registration).toList();
+
+                return List.of(
+                        new ReportChartDto("rpc1", "ARC days remaining", "bar", "half", tails,
+                                List.of(new ReportSeriesDto("Days",
+                                        fleet.stream().map(row -> row.arcDaysLeft() == null
+                                                ? 0d : (double) row.arcDaysLeft()).toList(), null,
+                                        fleet.stream().map(row -> {
+                                            long left = row.arcDaysLeft() == null
+                                                    ? 0 : row.arcDaysLeft();
+                                            return left < 90 ? Rp.RED
+                                                    : left < 180 ? Rp.AMBER : Rp.GREEN;
+                                        }).toList()))),
+                        new ReportChartDto("rpc2", "Days to next scheduled check", "bar", "half",
+                                tails, List.of(Rp.series("Days",
+                                        fleet.stream().map(row -> row.nextDueInDays() == null
+                                                ? 0d : (double) row.nextDueInDays()).toList(),
+                                        Rp.NAVY2))),
+                        Rp.donut("rpc3", "Fleet airworthiness status", "third",
+                                Rp.tally(fleet, FleetStatusRowDto::status)),
+                        Rp.stacked("rpc4", "Tasks open vs overdue", "twothirds", tails,
+                                List.of(
+                                        Rp.series("Open", fleet.stream()
+                                                .map(row -> (double) row.openTasks()).toList(),
+                                                Rp.AMBER),
+                                        Rp.series("Overdue", fleet.stream()
+                                                .map(row -> (double) row.overdueTasks()).toList(),
+                                                Rp.RED))));
             }
 
             @Override
             public String note() {
                 return "The period above is the expiry horizon, not a filter on events: the report "
-                        + "answers what falls due, which is a question about the future rather than "
-                        + "about a past window.";
+                        + "answers what falls due, which is a question about the future. ARC "
+                        + "validity is tracked per M.A.901 — an aircraft whose ARC has lapsed "
+                        + "cannot be released to service whatever its technical condition. LLP "
+                        + "percentages are life remaining, so the low figure is the urgent one.";
             }
         };
     }
 
-    /* ── SALES — the aircraft register ────────────────────────────────── */
+    /* ══════════════ AIRCRAFT AVAILABILITY — the fleet for a sales desk ═══ */
 
     @Bean
-    ReportRunner aircraftRegisterReport(CamoService camoService, LegService legService) {
+    ReportRunner aircraftAvailabilityReport(CamoService camoService, LegService legService) {
         return new ReportRunner() {
             @Override
             public String code() {
@@ -464,169 +327,298 @@ public class CatalogueReportRunners {
 
             @Override
             public String subtitle() {
-                return "The fleet as an owner reads it";
+                return "Tail-by-tail status, type mix and technical availability for sales";
+            }
+
+            @Override
+            public String scope() {
+                return "Fleet applied; period drives the sectors-flown column";
             }
 
             @Override
             public List<String> columns() {
-                return List.of("Registration", "Type", "Model", "Status",
-                        "Hours since new", "Cycles since new", "Sectors in period",
-                        "Block in period");
+                return List.of("Registration", "Type", "Model", "Status", "ARC expiry",
+                        "ARC days", "Next check", "Hours since new", "Sectors in period",
+                        "Block in period", "Idle days");
             }
 
             @Override
             public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                Map<String, List<LegDto>> byTail = legService.findProgrammeRange(tenantId, from, to)
-                        .stream()
-                        .filter(leg -> leg.registration() != null)
-                        .collect(Collectors.groupingBy(LegDto::registration));
+                Map<String, List<LegDto>> byTail = flownByTail(legService, tenantId, from, to);
+                int dayCount = Rp.days(from, to).size();
 
                 return camoService.findFleetStatus(tenantId).stream()
                         .map(row -> {
                             List<LegDto> flown = byTail.getOrDefault(row.registration(), List.of());
+                            long activeDays = flown.stream()
+                                    .map(leg -> leg.std().toLocalDate()).distinct().count();
                             return List.of(
                                     row.registration(),
-                                    nullSafe(row.icaoType()),
-                                    nullSafe(row.model()),
-                                    nullSafe(row.status()),
-                                    nullSafe(row.hoursSinceNew()),
-                                    nullSafe(row.cyclesSinceNew()),
+                                    Rp.text(row.icaoType()),
+                                    Rp.text(row.model()),
+                                    Rp.text(row.status()),
+                                    Rp.iso(row.arcExpiresOn()),
+                                    row.arcDaysLeft() == null ? Rp.EMPTY
+                                            : String.valueOf(row.arcDaysLeft()),
+                                    Rp.text(row.nextDueCode()),
+                                    Rp.text(row.hoursSinceNew()),
                                     String.valueOf(flown.size()),
-                                    hhmm(flown.stream()
-                                            .mapToLong(CatalogueReportRunners::blockMinutes).sum()));
+                                    Rp.dur(flown.stream()
+                                            .mapToDouble(OpsReportRunners::blockHours).sum()),
+                                    String.valueOf(Math.max(0, dayCount - activeDays)));
                         })
                         .toList();
             }
 
             @Override
-            public String note() {
-                return "A registration that flew nothing in the period shows zero rather than "
-                        + "dropping off the list: an owner asking about their aircraft is entitled "
-                        + "to see that it did not fly.";
-            }
-        };
-    }
-
-    /* ── SAFETY — occurrences and experience feedback ─────────────────── */
-
-    @Bean
-    ReportRunner safetyReportsReport(SafetyOverviewService overviewService,
-                                     SmsRegisterService registerService) {
-        return new ReportRunner() {
-            @Override
-            public String code() {
-                return "SAF-REX";
-            }
-
-            @Override
-            public String module() {
-                return "Safety";
-            }
-
-            @Override
-            public String subtitle() {
-                return "Occurrences and experience feedback together";
-            }
-
-            @Override
-            public List<String> columns() {
-                return List.of("Kind", "Reference", "Title", "Category", "Date",
-                        "Risk", "Status");
-            }
-
-            @Override
-            public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                List<List<String>> rows = new ArrayList<>();
-
-                overviewService.findOverview(tenantId).recentOccurrences().stream()
-                        .filter(occurrence -> within(occurrence.occurredAt(), from, to))
-                        .forEach(occurrence -> rows.add(List.of(
-                                "Occurrence",
-                                nullSafe(occurrence.reference()),
-                                nullSafe(occurrence.title()),
-                                nullSafe(occurrence.category()),
-                                date(occurrence.occurredAt()),
-                                nullSafe(occurrence.riskLevel()),
-                                nullSafe(occurrence.status()))));
-
-                registerService.findRexLibrary(tenantId, null).stream()
-                        .filter(rex -> rex.publishedOn() != null
-                                && !rex.publishedOn().isBefore(from)
-                                && !rex.publishedOn().isAfter(to))
-                        .forEach(rex -> rows.add(List.of(
-                                "REX",
-                                rex.reference(),
-                                rex.title(),
-                                rex.category(),
-                                rex.publishedOn().toString(),
-                                "—",
-                                rex.status())));
-
-                return rows;
-            }
-
-            @Override
             public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
-                var overview = overviewService.findOverview(tenantId);
-                var rex = registerService.findRexLibrary(tenantId, null);
+                List<FleetStatusRowDto> fleet = camoService.findFleetStatus(tenantId);
+                Map<String, List<LegDto>> byTail = flownByTail(legService, tenantId, from, to);
+                long available = fleet.stream()
+                        .filter(row -> "SERVICEABLE".equalsIgnoreCase(row.status())
+                                || "OK".equalsIgnoreCase(row.status())).count();
+                long down = fleet.size() - available;
+                List<Rp.Bucket> byType = Rp.tally(fleet, FleetStatusRowDto::icaoType);
+                int sectors = byTail.values().stream().mapToInt(List::size).sum();
+                FleetStatusRowDto idlest = fleet.stream()
+                        .min(Comparator.comparingInt(row ->
+                                byTail.getOrDefault(row.registration(), List.of()).size()))
+                        .orElse(null);
+
                 return List.of(
-                        kpi("Occurrences this month",
-                                String.valueOf(overview.occurrencesThisMonth()),
-                                "filed into the register", "neutral"),
-                        kpi("Still open", String.valueOf(overview.occurrencesStillOpen()),
-                                "not yet closed",
-                                overview.occurrencesStillOpen() == 0 ? "good" : "warn"),
-                        kpi("Above tolerance", String.valueOf(overview.risksAboveTolerance()),
-                                "risk index demands action",
-                                overview.risksAboveTolerance() == 0 ? "good" : "bad"),
-                        kpi("REX published",
-                                String.valueOf(rex.stream()
-                                        .filter(entry -> "published".equals(entry.status())).count()),
-                                "lessons shared company-wide", "good"));
+                        Rp.kpi("Fleet size", String.valueOf(fleet.size()),
+                                byType.size() + " distinct types"),
+                        Rp.kpi("Available", String.valueOf(available),
+                                Rp.pct(available, fleet.size()) + " % technical availability",
+                                Rp.rateTone(Rp.pct(available, fleet.size()), 90, 75),
+                                Rp.pct(available, fleet.size())),
+                        Rp.kpi("Down (AOG / MX)", String.valueOf(down),
+                                down == 0 ? "none" : "not offerable",
+                                down == 0 ? "good" : "bad"),
+                        Rp.kpi("Largest type", byType.isEmpty() ? Rp.EMPTY : byType.get(0).key(),
+                                byType.isEmpty() ? "" : byType.get(0).count() + " aircraft",
+                                "warn"),
+                        Rp.kpi("Sectors in period", String.valueOf(sectors), from + " → " + to,
+                                "warn"),
+                        Rp.kpi("Offer first",
+                                idlest == null ? Rp.EMPTY : idlest.registration(),
+                                idlest == null ? ""
+                                        : byTail.getOrDefault(idlest.registration(), List.of())
+                                                .size() + " sectors flown"));
             }
 
             @Override
             public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
-                var byDomain = overviewService.findOverview(tenantId).riskByDomain();
-                return List.of(chart("rp-saf-1", "Risk by domain", "bar", "half",
-                        byDomain.stream().map(entry -> entry.label()).toList(),
-                        List.of(series("Residual risk index",
-                                byDomain.stream().map(entry -> (double) entry.residualIndex()).toList(),
-                                RED))));
+                List<FleetStatusRowDto> fleet = camoService.findFleetStatus(tenantId);
+                Map<String, List<LegDto>> byTail = flownByTail(legService, tenantId, from, to);
+
+                return List.of(
+                        Rp.donut("rpc1", "Status mix", "third",
+                                Rp.tally(fleet, FleetStatusRowDto::status)),
+                        Rp.bar("rpc2", "Aircraft per type", "third",
+                                Rp.tally(fleet, FleetStatusRowDto::icaoType), Rp.NAVY2),
+                        Rp.hbar("rpc3", "Sectors flown per tail", "third",
+                                fleet.stream()
+                                        .map(row -> new Rp.Bucket(row.registration(),
+                                                byTail.getOrDefault(row.registration(),
+                                                        List.of()).size()))
+                                        .sorted(Comparator.comparingDouble(Rp.Bucket::value)
+                                                .reversed())
+                                        .toList(), Rp.BLUE));
             }
 
             @Override
             public String note() {
-                return "Two different things on one page, and the Kind column keeps them apart. An "
-                        + "occurrence is something that happened; a REX is a lesson somebody chose "
-                        + "to pass on, and it is never disciplinary.";
+                return "Technical availability counts tails with no open grounding event. A "
+                        + "registration that flew nothing in the period shows zero rather than "
+                        + "dropping off the list: an owner asking about their aircraft is entitled "
+                        + "to see that it did not fly, and a sales desk needs the idle ones first. "
+                        + "Idle days are period days on which that tail flew no sector.";
             }
         };
     }
 
-    /* ── helpers ──────────────────────────────────────────────────────── */
+    /* ══════════════ SAFETY (SMS) — reports and occurrences ═══════════════ */
 
-    private static List<PersonDto> people(CrewPeopleService service, UUID tenantId) {
-        return service.findAll(tenantId, null, null, true);
+    @Bean
+    ReportRunner safetyOccurrencesReport(SafetyService safetyService) {
+        return new ReportRunner() {
+            @Override
+            public String code() {
+                return "SAF-OCC";
+            }
+
+            @Override
+            public String module() {
+                return "Safety (SMS)";
+            }
+
+            @Override
+            public String subtitle() {
+                return "Severity, status and type breakdown of SMS reports";
+            }
+
+            @Override
+            public String scope() {
+                return "Fleet where the flight is identifiable; anonymous reports carry no reporter";
+            }
+
+            @Override
+            public List<String> columns() {
+                return List.of("Ref", "Occurred", "Title", "Category", "Phase", "Severity",
+                        "Status", "Reporter", "Aircraft", "Station", "Open actions",
+                        "Filed with authority");
+            }
+
+            @Override
+            public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
+                return occurrences(safetyService, tenantId, from, to).stream()
+                        .map(occurrence -> List.of(
+                                occurrence.reference(),
+                                date(occurrence.occurredAt()),
+                                Rp.text(occurrence.title()),
+                                Rp.text(occurrence.category()),
+                                Rp.text(occurrence.phaseOfFlight()),
+                                occurrence.riskLevel() == null
+                                        ? "not assessed" : occurrence.riskLevel(),
+                                Rp.text(occurrence.status()),
+                                occurrence.anonymous() ? "anonymous"
+                                        : Rp.text(occurrence.reportedByName()),
+                                Rp.text(occurrence.registration()),
+                                Rp.text(occurrence.stationIcao()),
+                                String.valueOf(occurrence.openActions()),
+                                occurrence.eccairsExportedAt() == null
+                                        ? "not filed" : Rp.text(occurrence.eccairsReference())))
+                        .toList();
+            }
+
+            @Override
+            public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
+                List<OccurrenceDto> rows = occurrences(safetyService, tenantId, from, to);
+                long critical = rows.stream()
+                        .filter(row -> "UNACCEPTABLE".equalsIgnoreCase(row.riskLevel())
+                                || "HIGH".equalsIgnoreCase(row.riskLevel())).count();
+                long open = rows.stream()
+                        .filter(row -> !"CLOSED".equalsIgnoreCase(row.status())).count();
+                long notAssessed = rows.stream().filter(row -> row.riskLevel() == null).count();
+                List<Rp.Bucket> byCategory = Rp.tally(rows, OccurrenceDto::category);
+                long filed = rows.stream()
+                        .filter(row -> row.eccairsExportedAt() != null).count();
+
+                return List.of(
+                        Rp.kpi("Total reports", String.valueOf(rows.size()), "all severities"),
+                        Rp.kpi("High or unacceptable", String.valueOf(critical),
+                                critical == 0 ? "none" : "act before the next flight",
+                                critical == 0 ? "good" : "bad"),
+                        Rp.kpi("Open", String.valueOf(open),
+                                Rp.pct(open, rows.size()) + " % not closed",
+                                Rp.countTone(open)),
+                        Rp.kpi("Closed", String.valueOf(rows.size() - open),
+                                "investigation complete", "good"),
+                        Rp.kpi("Not assessed", String.valueOf(notAssessed),
+                                notAssessed == 0 ? "every report has a risk level"
+                                        : "no risk level recorded",
+                                notAssessed == 0 ? "good" : "warn"),
+                        Rp.kpi("Filed with authority", String.valueOf(filed),
+                                "ECCAIRS / Regulation (EU) 376/2014",
+                                byCategory.isEmpty() ? "neutral" : "neutral"));
+            }
+
+            @Override
+            public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
+                List<OccurrenceDto> rows = occurrences(safetyService, tenantId, from, to);
+                List<Rp.Bucket> bySeverity = Rp.tally(rows,
+                        row -> row.riskLevel() == null ? "Not assessed" : row.riskLevel());
+
+                return List.of(
+                        Rp.donut("rpc1", "By risk level", "third", bySeverity,
+                                bySeverity.stream()
+                                        .map(bucket -> riskColour(bucket.key())).toList()),
+                        Rp.donut("rpc2", "By workflow status", "third",
+                                Rp.tally(rows, OccurrenceDto::status)),
+                        Rp.hbar("rpc3", "By category", "third",
+                                Rp.topN(Rp.tally(rows, OccurrenceDto::category), 10), Rp.NAVY2),
+                        Rp.bar("rpc4", "Reports by station", "full",
+                                Rp.topN(Rp.tally(rows, OccurrenceDto::stationIcao), 12), Rp.BLUE));
+            }
+
+            @Override
+            public String note() {
+                return "Filtered on the date the occurrence happened, not the date it was filed: "
+                        + "a report raised late still belongs to the period it describes. "
+                        + "Anonymous reports appear without their reporter by design — the "
+                        + "confidentiality is the reason the report exists. \"Not assessed\" means "
+                        + "no risk level has been recorded; it is not a low risk, and a report "
+                        + "sitting there is the one to look at first. Severity and status follow "
+                        + "the SMS workflow of ICAO Annex 19.";
+            }
+        };
     }
 
-    private static long blockMinutes(LegDto leg) {
-        if (leg.outAt() != null && leg.inAt() != null) {
-            return Duration.between(leg.outAt(), leg.inAt()).toMinutes();
+    /* ══════════════════════════ shared reading ═══════════════════════════ */
+
+    private static List<DefectRowDto> defects(TechLogService techLogService, UUID tenantId,
+                                              LocalDate from, LocalDate to) {
+        return techLogService.findBoard(tenantId).defects().stream()
+                .filter(defect -> within(defect.reportedAt(), from, to))
+                .sorted(Comparator.comparing(DefectRowDto::reportedAt).reversed())
+                .toList();
+    }
+
+    private static List<OccurrenceDto> occurrences(SafetyService safetyService, UUID tenantId,
+                                                   LocalDate from, LocalDate to) {
+        int window = (int) Math.max(1,
+                java.time.temporal.ChronoUnit.DAYS.between(from, LocalDate.now(ZoneOffset.UTC)) + 1);
+        return safetyService.findReporting(tenantId, window).occurrences().stream()
+                .filter(occurrence -> within(occurrence.occurredAt(), from, to))
+                .sorted(Comparator.comparing(OccurrenceDto::occurredAt).reversed())
+                .toList();
+    }
+
+    private static Map<String, List<LegDto>> flownByTail(LegService legService, UUID tenantId,
+                                                         LocalDate from, LocalDate to) {
+        Map<String, List<LegDto>> byTail = new HashMap<>();
+        legService.findProgrammeRange(tenantId, from, to).stream()
+                .filter(leg -> leg.registration() != null
+                        && !"CANCELLED".equalsIgnoreCase(leg.status()))
+                .forEach(leg -> byTail
+                        .computeIfAbsent(leg.registration(), key -> new java.util.ArrayList<>())
+                        .add(leg));
+        return byTail;
+    }
+
+    /** « ATA 24 — Electrical power », the label the prototype groups by. */
+    private static String ata(DefectRowDto defect) {
+        if (defect.ataChapter() == null || defect.ataChapter().isBlank()) {
+            return Rp.EMPTY;
         }
-        if (leg.std() != null && leg.sta() != null) {
-            return Duration.between(leg.std(), leg.sta()).toMinutes();
-        }
-        return 0;
+        return defect.system() == null || defect.system().isBlank()
+                ? "ATA " + defect.ataChapter()
+                : "ATA " + defect.ataChapter() + " — " + defect.system();
     }
 
-    /** Days to a date, negative once it has passed. Derived, never stored. */
-    private static long daysTo(LocalDate date) {
-        return date == null ? 0
-                : java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(ZoneOffset.UTC), date);
+    private static boolean is(DefectRowDto defect, String status) {
+        return status.equalsIgnoreCase(defect.status());
     }
 
-    private static boolean within(java.time.OffsetDateTime at, LocalDate from, LocalDate to) {
+    private static double count(List<DefectRowDto> rows, String registration, String status) {
+        return rows.stream()
+                .filter(defect -> registration.equals(defect.registration()) && is(defect, status))
+                .count();
+    }
+
+    private static String riskColour(String level) {
+        return switch (level == null ? "" : level.toUpperCase()) {
+            case "UNACCEPTABLE", "CRITICAL" -> Rp.RED;
+            case "HIGH" -> "#f97316";
+            case "TOLERABLE", "MEDIUM" -> Rp.AMBER;
+            case "ACCEPTABLE", "LOW" -> Rp.BLUE;
+            case "NOT ASSESSED" -> Rp.GREY;
+            default -> Rp.GREEN;
+        };
+    }
+
+    private static boolean within(OffsetDateTime at, LocalDate from, LocalDate to) {
         if (at == null) {
             return false;
         }
@@ -634,38 +626,8 @@ public class CatalogueReportRunners {
         return !day.isBefore(from) && !day.isAfter(to);
     }
 
-    private static String date(java.time.OffsetDateTime at) {
-        return at == null ? "—"
+    private static String date(OffsetDateTime at) {
+        return at == null ? Rp.EMPTY
                 : at.atZoneSameInstant(ZoneOffset.UTC).toLocalDate().toString();
-    }
-
-    private static String hhmm(long minutes) {
-        return String.format("%d:%02d", minutes / 60, Math.abs(minutes % 60));
-    }
-
-    /** "FIRST_OFFICER" reads badly in a report an owner sees. */
-    private static String titleish(String value) {
-        if (value == null || value.isBlank()) {
-            return "—";
-        }
-        String spaced = value.replace('_', ' ').toLowerCase();
-        return Character.toUpperCase(spaced.charAt(0)) + spaced.substring(1);
-    }
-
-    private static String nullSafe(Object value) {
-        return value == null ? "—" : String.valueOf(value);
-    }
-
-    private static ReportKpiDto kpi(String label, String value, String sub, String tone) {
-        return new ReportKpiDto(label, value, sub, tone, null);
-    }
-
-    private static ReportChartDto chart(String id, String title, String kind, String width,
-                                        List<String> labels, List<ReportSeriesDto> series) {
-        return new ReportChartDto(id, title, kind, width, labels, series);
-    }
-
-    private static ReportSeriesDto series(String label, List<Double> data, String colour) {
-        return new ReportSeriesDto(label, data, colour);
     }
 }

@@ -7,12 +7,15 @@ import com.thenetworkplan.networkplan.tripsupport.dto.LegPermitsDto;
 import com.thenetworkplan.networkplan.tripsupport.dto.LegServicesDto;
 import com.thenetworkplan.networkplan.tripsupport.dto.PermitRequestDto;
 import com.thenetworkplan.networkplan.tripsupport.dto.ServiceRequestDto;
+import com.thenetworkplan.networkplan.tripsupport.dto.UpdatePermitRequestDetailsCommand;
 import com.thenetworkplan.networkplan.tripsupport.dto.UpdateRequestStatusCommand;
+import com.thenetworkplan.networkplan.tripsupport.dto.UpdateServiceRequestDetailsCommand;
 import com.thenetworkplan.networkplan.tripsupport.service.GroundServiceService;
 import com.thenetworkplan.networkplan.tripsupport.service.PermitService;
 import jakarta.validation.Valid;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -69,5 +72,33 @@ public class TripSupportController {
     public ServiceRequestDto updateServiceRequest(@PathVariable UUID requestId,
                                                    @Valid @RequestBody UpdateRequestStatusCommand command) {
         return groundServiceService.updateStatus(TenantContext.require(), requestId, command);
+    }
+
+    /** The cross on a permit row of the flight label — drafts only. */
+    @DeleteMapping("/permit-requests/{requestId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deletePermitRequest(@PathVariable UUID requestId) {
+        permitService.delete(TenantContext.require(), requestId);
+    }
+
+    /** The cross on a service row of the flight label — drafts only. */
+    @DeleteMapping("/service-requests/{requestId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteServiceRequest(@PathVariable UUID requestId) {
+        groundServiceService.delete(TenantContext.require(), requestId);
+    }
+
+    /** Les listes deroulantes d'une ligne de permis — pays, nature, destinataire. */
+    @PatchMapping("/permit-requests/{requestId}/details")
+    public PermitRequestDto updatePermitRequestDetails(@PathVariable UUID requestId,
+                                                       @Valid @RequestBody UpdatePermitRequestDetailsCommand command) {
+        return permitService.updateDetails(TenantContext.require(), requestId, command);
+    }
+
+    /** Les listes deroulantes d'une ligne de service — type et fournisseur. */
+    @PatchMapping("/service-requests/{requestId}/details")
+    public ServiceRequestDto updateServiceRequestDetails(@PathVariable UUID requestId,
+                                                         @Valid @RequestBody UpdateServiceRequestDetailsCommand command) {
+        return groundServiceService.updateDetails(TenantContext.require(), requestId, command);
     }
 }

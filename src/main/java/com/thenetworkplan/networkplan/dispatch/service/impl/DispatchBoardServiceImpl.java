@@ -15,6 +15,8 @@ import com.thenetworkplan.networkplan.dispatch.dto.DispatchRowDto;
 import com.thenetworkplan.networkplan.dispatch.dto.DispatchRowKind;
 import com.thenetworkplan.networkplan.dispatch.dto.DispatchTab;
 import com.thenetworkplan.networkplan.dispatch.service.DispatchBoardService;
+import com.thenetworkplan.networkplan.flightfollowing.service.LegRiskAssessor;
+import com.thenetworkplan.networkplan.flightfollowing.service.SmsRiskRule;
 import com.thenetworkplan.networkplan.ops.dto.LegDto;
 import com.thenetworkplan.networkplan.ops.service.LegService;
 import com.thenetworkplan.networkplan.ops.service.OnTimePerformanceRule;
@@ -81,9 +83,11 @@ public class DispatchBoardServiceImpl implements DispatchBoardService {
     private final AirportService airportService;
     private final OpsProperties opsProperties;
     private final OnTimePerformanceRule onTimePerformanceRule;
+    private final LegRiskAssessor legRiskAssessor;
     private final ExecutorService executor;
 
     public DispatchBoardServiceImpl(LegService legService,
+                                    LegRiskAssessor legRiskAssessor,
                                     GroundServiceService groundServiceService,
                                     PermitService permitService,
                                     CrewAssignmentService crewAssignmentService,
@@ -100,6 +104,7 @@ public class DispatchBoardServiceImpl implements DispatchBoardService {
         this.airportService = airportService;
         this.opsProperties = opsProperties;
         this.onTimePerformanceRule = onTimePerformanceRule;
+        this.legRiskAssessor = legRiskAssessor;
         this.executor = executor;
     }
 
@@ -176,6 +181,34 @@ public class DispatchBoardServiceImpl implements DispatchBoardService {
         return board;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Not cached: the board is read every thirty seconds by everyone, one
+     * leg is read when somebody opens it. The three reads below are the same
+     * ones the board makes, narrowed to a single identifier, and they go
+     * through the same {@link #flightRows} so that the row cannot drift from
+     * the row on the board.
+     */
+    @Override
+    public DispatchRowDto findRow(UUID tenantId, UUID legId) {
+        LegDto leg = legService.findById(tenantId, legId);
+        List<UUID> legIds = List.of(leg.id());
+
+        CompletableFuture<Map<UUID, LegServicesSummary>> services =
+                async(() -> groundServiceService.summariseByLegIds(tenantId, legIds));
+        CompletableFuture<Map<UUID, LegPermitsSummary>> permits =
+                async(() -> permitService.summariseByLegIds(tenantId, legIds));
+        CompletableFuture<Map<UUID, LegCrewDto>> crew = async(() ->
+                crewAssignmentService.findByLegIds(tenantId, legIds, leg.std().toLocalDate()));
+
+        Map<String, AirportDto> stations =
+                airportService.findAllByIcao(stationCodes(List.of(leg), List.of()));
+
+        return flightRows(List.of(leg), await(services), await(permits), await(crew),
+                aircraftService.findOpenMelByAircraft(tenantId), stations).getFirst();
+    }
+
     // ---------------------------------------------------------------- rows
 
     private List<DispatchRowDto> groundRows(List<AircraftDto> grounded,
@@ -187,8 +220,8 @@ public class DispatchBoardServiceImpl implements DispatchBoardService {
                     ? aircraft.currentBaseIcao() : aircraft.homeBaseIcao();
             String code = displayCode(stations, station);
             boolean aog = "AOG".equals(aircraft.status());
-            boolean melBlocking = melByAircraft.getOrDefault(aircraft.id(), List.of()).stream()
-                    .anyMatch(MelItemDto::blocksDispatch);
+            List<MelItemDto> mel = melByAircraft.getOrDefault(aircraft.id(), List.of());
+            boolean melBlocking = mel.stream().anyMatch(MelItemDto::blocksDispatch);
 
             rows.add(new DispatchRowDto(
                     DispatchRowKind.GROUND,
@@ -197,6 +230,21 @@ public class DispatchBoardServiceImpl implements DispatchBoardService {
                     aircraft.id(),
                     null,
                     label(aircraft),
+                    /* CRITICAL, comme l'annexe — et comme l'exploitant l'a
+                       demande apres que la question lui a ete posee.
+                       C'est un ETAT, pas une sortie de matrice. La matrice de
+                       l'ICAO Doc 9859 score un VOL (gravite du resultat redoute
+                       x probabilite) ; un appareil immobilise n'a pas de
+                       resultat redoute, et l'y passer donnait MEDIUM 8 — a la
+                       fois faux et rassurant sur la ligne la plus grave du
+                       tableau. Un appareil non remis en service est le plus
+                       haut niveau d'attention qu'une ligne puisse porter, et
+                       c'est ce que le mot dit.
+
+                       Ce qui NE suit PAS, volontairement : l'indice. Aucune
+                       matrice n'a tourne, donc aucun chiffre n'est affiche a
+                       cote. Un « INDEX 16 » ecrit ici serait un nombre que
+                       personne ne peut refaire. */
                     "CRITICAL",
                     aircraft.registration(),
                     aircraft.icaoType(),
@@ -216,7 +264,35 @@ public class DispatchBoardServiceImpl implements DispatchBoardService {
                     true,
                     melBlocking,
                     0,
-                    aircraft.statusReason()));
+                    aircraft.statusReason(),
+                    /* L'annexe ouvre sur un avion au sol EXACTEMENT le meme
+                       dossier que sur un vol : sa ligne « sol » est un vol
+                       fictif dont le depart et l'arrivee sont l'escale ou
+                       l'appareil est immobilise. Le bandeau de route montre
+                       donc ce terrain des deux cotes — ce qui est la verite :
+                       l'avion y est, et il n'en part pas. */
+                    name(stations, station),
+                    city(stations, station),
+                    country(stations, station),
+                    name(stations, station),
+                    city(stations, station),
+                    country(stations, station),
+                    /* Pas de type de vol : il n'y a pas de vol. La pastille du
+                       bandeau porte a la place le motif d'immobilisation, comme
+                       chez elle (FL.nature lit flight.label avant tout). */
+                    null,
+                    /* Ni nature commerciale ni lettre de case 8 : un appareil
+                       immobilise ne depose pas de plan de vol. */
+                    null, null, 0,
+                    /* Pas d'indice : aucune matrice n'a tourne (voir le niveau
+                       plus haut). Le facteur dominant et l'action sont en
+                       revanche ceux que le dossier doit lire — ce qui bloque,
+                       et ce que la CAMO en dit. Le bandeau a ainsi un seul
+                       chemin de rendu, vol ou appareil au sol. */
+                    0,
+                    melBlocking ? "MEL blocks dispatch" : null,
+                    aircraft.statusReason(),
+                    null));
         }
         return rows;
     }
@@ -238,6 +314,16 @@ public class DispatchBoardServiceImpl implements DispatchBoardService {
 
             boolean melBlocking = melByAircraft.getOrDefault(leg.aircraftId(), List.of()).stream()
                     .anyMatch(MelItemDto::blocksDispatch);
+            /* Le risque est CALCULE, pas relu. La colonne ops.legs.risk_level
+               n'est ecrite par personne dans l'application : elle vient du jeu
+               d'amorce. Le tableau la lisait pendant que Flight Following
+               evaluait, et le meme vol pouvait donc porter deux niveaux selon
+               l'ecran ouvert. Un exploitant tient UNE image du risque. */
+            SmsRiskRule.Assessment risk = legRiskAssessor.assess(
+                    melByAircraft.getOrDefault(leg.aircraftId(), List.of()).stream()
+                            .findFirst().orElse(null),
+                    crew);
+
             int delayMinutes = delayMinutes(leg);
             boolean attention = !"READY".equals(services.readiness())
                     || permits.outstanding() > 0
@@ -256,7 +342,7 @@ public class DispatchBoardServiceImpl implements DispatchBoardService {
                     leg.aircraftId(),
                     leg.flightNo(),
                     leg.flightNo(),
-                    leg.riskLevel(),
+                    risk.level(),
                     leg.registration(),
                     leg.icaoType(),
                     leg.model(),
@@ -287,9 +373,57 @@ public class DispatchBoardServiceImpl implements DispatchBoardService {
                     attention,
                     melBlocking,
                     delayMinutes,
-                    leg.remark()));
+                    leg.remark(),
+                    // Les escales sont deja chargees pour le tableau : le
+                    // dossier de vol les relit en memoire, pas en base.
+                    name(stations, leg.depIcao()),
+                    city(stations, leg.depIcao()),
+                    country(stations, leg.depIcao()),
+                    name(stations, leg.arrIcao()),
+                    city(stations, leg.arrIcao()),
+                    country(stations, leg.arrIcao()),
+                    leg.flightType(),
+                    leg.commercialType(),
+                    leg.flightPlanLetter(),
+                    leg.paxCount(),
+                    risk.index(),
+                    dominant(risk),
+                    risk.action(),
+                    leg.mvtSentAt()));
         }
         return rows;
+    }
+
+    /**
+     * La phrase du facteur le plus grave — ce que l'annexe appelle « topLabel ».
+     *
+     * <p>Un bandeau qui annonce un indice sans dire ce qui le porte oblige a
+     * ouvrir le dossier pour le savoir. Les facteurs muets ne comptent pas :
+     * « meteo inconnue » n'est pas ce qui rend un vol critique.
+     */
+    private static String dominant(SmsRiskRule.Assessment risk) {
+        return risk.factors().stream()
+                .filter(scored -> scored.level().active())
+                .max(Comparator.comparingInt(scored -> scored.level().severity()))
+                .map(SmsRiskRule.Scored::detail)
+                .orElse(null);
+    }
+
+    /** « Tunis Carthage », quand le registre le connait. */
+    private static String name(Map<String, AirportDto> stations, String icao) {
+        AirportDto airport = stations.get(icao);
+        return airport == null ? null : airport.name();
+    }
+
+    /** « Tunis » — la ville desservie, quand le registre la porte. */
+    private static String city(Map<String, AirportDto> stations, String icao) {
+        AirportDto airport = stations.get(icao);
+        return airport == null ? null : airport.city();
+    }
+
+    private static String country(Map<String, AirportDto> stations, String icao) {
+        AirportDto airport = stations.get(icao);
+        return airport == null ? null : airport.countryIso2();
     }
 
     // ---------------------------------------------------------------- KPI

@@ -152,8 +152,16 @@ final class Rp {
         return MONTHS[date.getMonthValue() - 1] + " " + date.getYear();
     }
 
+    /**
+     * One decimal place, with a decimal point whatever the server locale.
+     *
+     * <p>{@code String.format} without a locale uses the JVM default, and a
+     * server started in a French locale would print « 1,9 » next to « 93:20 »
+     * on the same screen. Worse, that figure goes into the CSV export, where a
+     * comma is the column separator.
+     */
     static String n1(double value) {
-        return String.format("%.1f", value);
+        return String.format(java.util.Locale.ROOT, "%.1f", value);
     }
 
     /** A whole percent. Zero when there is no denominator: never « NaN% ». */

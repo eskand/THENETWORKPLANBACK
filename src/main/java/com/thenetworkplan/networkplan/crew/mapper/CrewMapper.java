@@ -41,7 +41,8 @@ public class CrewMapper {
                 validity.name(),
                 assignment.getDutyStart(),
                 assignment.getDutyEnd(),
-                assignment.getCheckedInAt());
+                assignment.getCheckedInAt(),
+                assignment.getCheckedOutAt());
     }
 
     /**

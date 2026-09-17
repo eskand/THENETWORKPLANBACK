@@ -13,6 +13,7 @@ import com.thenetworkplan.networkplan.tripsupport.dto.LegServicesSummary;
 import com.thenetworkplan.networkplan.tripsupport.dto.ServiceReadiness;
 import com.thenetworkplan.networkplan.tripsupport.dto.ServiceRequestDto;
 import com.thenetworkplan.networkplan.tripsupport.dto.UpdateRequestStatusCommand;
+import com.thenetworkplan.networkplan.tripsupport.dto.UpdateServiceRequestDetailsCommand;
 import com.thenetworkplan.networkplan.tripsupport.mapper.TripSupportMapper;
 import com.thenetworkplan.networkplan.tripsupport.repository.ServiceRequestRepository;
 import com.thenetworkplan.networkplan.tripsupport.service.GroundServiceService;
@@ -145,6 +146,48 @@ public class GroundServiceServiceImpl implements GroundServiceService {
         }
         request.setStatus(target);
         return mapper.toDto(requestRepository.save(request));
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(cacheNames = CacheNames.DISPATCH_BOARD, allEntries = true)
+    public ServiceRequestDto updateDetails(UUID tenantId, UUID requestId,
+                                           UpdateServiceRequestDetailsCommand command) {
+        ServiceRequest request = requestRepository.findByTenantIdAndId(tenantId, requestId)
+                .orElseThrow(() -> ResourceNotFoundException.of("Service request", requestId));
+        if (request.getStatus() != RequestStatus.DRAFT && request.getStatus() != RequestStatus.REFUSED) {
+            throw new BusinessRuleException("SERVICE_REQUEST_ENGAGED",
+                    "This request is with the supplier: revise it rather than rewriting what was sent");
+        }
+        GroundServiceType type = parseType(command.serviceType());
+        if (type != request.getServiceType()) {
+            requestRepository
+                    .findByTenantIdAndLegIdAndStationIcaoAndServiceType(
+                            tenantId, request.getLegId(), request.getStationIcao(), type)
+                    .ifPresent(existing -> {
+                        throw new BusinessRuleException("SERVICE_ALREADY_REQUESTED",
+                                type + " is already requested at " + request.getStationIcao() + " for this leg");
+                    });
+            request.setServiceType(type);
+        }
+        request.setSupplierName(command.supplierName());
+        if (command.remark() != null) {
+            request.setRemark(command.remark());
+        }
+        return mapper.toDto(requestRepository.save(request));
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(cacheNames = CacheNames.DISPATCH_BOARD, allEntries = true)
+    public void delete(UUID tenantId, UUID requestId) {
+        ServiceRequest request = requestRepository.findByTenantIdAndId(tenantId, requestId)
+                .orElseThrow(() -> ResourceNotFoundException.of("Service request", requestId));
+        if (request.getStatus() != RequestStatus.DRAFT) {
+            throw new BusinessRuleException("SERVICE_REQUEST_SENT",
+                    "This request has already been sent: mark it refused rather than deleting the trace");
+        }
+        requestRepository.delete(request);
     }
 
     private GroundServiceType parseType(String raw) {

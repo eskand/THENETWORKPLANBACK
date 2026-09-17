@@ -226,3 +226,39 @@ UPDATE platform.report_definitions
 UPDATE platform.report_definitions
    SET scope = 'Period applied to the permit request date'
  WHERE code = 'TS-PERMITS' AND scope IS NULL;
+
+-- ── l'ordre du menu ──────────────────────────────────────────
+--  POURQUOI UNE COLONNE. Le menu du prototype n'est ni
+--  alphabetique ni chronologique : c'est l'ordre dans lequel un
+--  exploitant pose les questions. « Acft Block Time by Month »
+--  d'abord parce que c'est le chiffre qu'on cite, « Cancelled
+--  Flights » plus bas parce qu'on n'y va que quand quelque chose
+--  a mal tourne. Trier par code ouvrirait l'ecran sur les
+--  annulations, ce qui est la seule question que personne ne pose
+--  en arrivant.
+ALTER TABLE platform.report_definitions
+    ADD COLUMN menu_order integer NOT NULL DEFAULT 900;
+
+UPDATE platform.report_definitions d
+   SET menu_order = o.rank
+  FROM (VALUES
+    -- Flights, dans l'ordre d'enregistrement du prototype
+    ('OPS-UTIL', 10), ('OPS-OTP', 20), ('OPS-ROUTE', 30), ('OPS-LOG', 40),
+    ('OPS-SUM', 50), ('OPS-SCHED', 60), ('OPS-STATUS', 70), ('OPS-CXL', 80),
+    ('OPS-DEST', 90), ('OPS-TOP100', 100), ('OPS-PAX', 110),
+    ('OPS-DELAY', 190),
+    -- Crew
+    ('CREW-EXP', 210), ('CREW-TRAIN', 220), ('CREW-FUNC', 230),
+    ('CREW-BLOCK', 240), ('CREW-DAYS', 250), ('CREW-MEMBERS', 260),
+    ('CREW-STAFF', 270), ('CREW-DUTY', 280), ('CREW-ROSTER', 290),
+    ('CREW-FTL', 300), ('CREW-FTLV', 310),
+    -- Sales
+    ('FLEET-REG', 410), ('COM-PIPE', 420),
+    -- Maintenance
+    ('MX-DEFECTS', 510), ('MX-ARC', 520), ('MX-DUE', 590), ('MX-MEL', 595),
+    -- Safety (SMS)
+    ('SAF-OCC', 610),
+    -- Trip support
+    ('TS-PERMITS', 710)
+  ) AS o(code, rank)
+ WHERE d.code = o.code;

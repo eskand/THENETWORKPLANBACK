@@ -195,9 +195,11 @@ public class OpsReportRunners {
             @Override
             public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
                 Map<UUID, String> causes = causeByLeg(legService, tenantId, from, to);
+                Map<UUID, Long> recorded = recordedByLeg(legService, tenantId, from, to);
                 return flown(legService, tenantId, from, to).stream()
-                        .filter(leg -> delay(leg) > 0)
-                        .sorted(Comparator.comparingLong(OpsReportRunners::delay).reversed())
+                        .filter(leg -> delay(leg, recorded) > 0)
+                        .sorted(Comparator.comparingLong((LegDto leg) ->
+                                delay(leg, recorded)).reversed())
                         .map(leg -> List.of(
                                 Rp.ddmmm(leg.std().toLocalDate()),
                                 Rp.text(leg.flightNo()),
@@ -205,7 +207,7 @@ public class OpsReportRunners {
                                 route(leg),
                                 Rp.hm(leg.std()),
                                 Rp.hm(leg.outAt()),
-                                delay(leg) + " min",
+                                delay(leg, recorded) + " min",
                                 causes.getOrDefault(leg.id(), "Unspecified")))
                         .toList();
             }
@@ -213,12 +215,16 @@ public class OpsReportRunners {
             @Override
             public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
                 List<LegDto> legs = flown(legService, tenantId, from, to);
-                List<LegDto> delayed = legs.stream().filter(leg -> delay(leg) > 0).toList();
+                Map<UUID, Long> recorded = recordedByLeg(legService, tenantId, from, to);
+                List<LegDto> delayed = legs.stream()
+                        .filter(leg -> delay(leg, recorded) > 0).toList();
                 long within15 = legs.stream()
-                        .filter(leg -> delay(leg) <= ON_TIME_TOLERANCE_MINUTES).count();
-                long totalDelay = delayed.stream().mapToLong(OpsReportRunners::delay).sum();
+                        .filter(leg -> delay(leg, recorded) <= ON_TIME_TOLERANCE_MINUTES).count();
+                long totalDelay = delayed.stream()
+                        .mapToLong(leg -> delay(leg, recorded)).sum();
                 LegDto worst = delayed.stream()
-                        .max(Comparator.comparingLong(OpsReportRunners::delay)).orElse(null);
+                        .max(Comparator.comparingLong((LegDto leg) -> delay(leg, recorded)))
+                        .orElse(null);
                 int otp = Rp.pct(within15, legs.size());
 
                 return List.of(
@@ -233,19 +239,23 @@ public class OpsReportRunners {
                                 delayed.isEmpty() ? Rp.EMPTY
                                         : Math.round((double) totalDelay / delayed.size()) + " min",
                                 "delayed sectors only"),
-                        Rp.kpi("Worst delay", worst == null ? Rp.EMPTY : delay(worst) + " min",
+                        Rp.kpi("Worst delay",
+                                worst == null ? Rp.EMPTY : delay(worst, recorded) + " min",
                                 worst == null ? "none recorded"
                                         : Rp.text(worst.flightNo()) + " · " + route(worst),
-                                worst != null && delay(worst) > 60 ? "bad" : "neutral"),
+                                worst != null && delay(worst, recorded) > 60
+                                        ? "bad" : "neutral"),
                         Rp.kpi("Delay-free days",
-                                delayFreeDays(legs) + " / " + flyingDays(legs),
+                                delayFreeDays(legs, recorded) + " / " + flyingDays(legs),
                                 "no delay recorded", "good"));
             }
 
             @Override
             public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
                 List<LegDto> legs = flown(legService, tenantId, from, to);
-                List<LegDto> delayed = legs.stream().filter(leg -> delay(leg) > 0).toList();
+                Map<UUID, Long> recorded = recordedByLeg(legService, tenantId, from, to);
+                List<LegDto> delayed = legs.stream()
+                        .filter(leg -> delay(leg, recorded) > 0).toList();
                 List<LocalDate> days = Rp.days(from, to);
                 Map<UUID, String> causes = causeByLeg(legService, tenantId, from, to);
 
@@ -254,21 +264,22 @@ public class OpsReportRunners {
                    change de sens d une periode a l autre. */
                 List<Rp.Bucket> buckets = new ArrayList<>();
                 Map<String, Long> counted = new LinkedHashMap<>();
-                legs.forEach(leg -> counted.merge(Rp.delayBucket(delay(leg)), 1L, Long::sum));
+                legs.forEach(leg ->
+                        counted.merge(Rp.delayBucket(delay(leg, recorded)), 1L, Long::sum));
                 Rp.DELAY_BUCKETS.stream()
                         .filter(counted::containsKey)
                         .forEach(name -> buckets.add(new Rp.Bucket(name, counted.get(name))));
 
                 List<Rp.Bucket> pareto = Rp.topN(Rp.sumBy(delayed,
                         leg -> shorten(causes.getOrDefault(leg.id(), "Unspecified")),
-                        OpsReportRunners::delay), 8);
+                        leg -> delay(leg, recorded)), 8);
 
                 Map<LocalDate, long[]> punctual = new LinkedHashMap<>();
                 legs.forEach(leg -> {
                     long[] figures = punctual.computeIfAbsent(
                             leg.std().toLocalDate(), key -> new long[2]);
                     figures[0]++;
-                    if (delay(leg) <= ON_TIME_TOLERANCE_MINUTES) {
+                    if (delay(leg, recorded) <= ON_TIME_TOLERANCE_MINUTES) {
                         figures[1]++;
                     }
                 });
@@ -288,7 +299,7 @@ public class OpsReportRunners {
                                 }).toList(), Rp.GREEN),
                         Rp.bar("rpc4", "Delay minutes by aircraft", "half",
                                 Rp.topN(Rp.sumBy(delayed, LegDto::registration,
-                                        OpsReportRunners::delay), 12), Rp.AMBER));
+                                        leg -> delay(leg, recorded)), 12), Rp.AMBER));
             }
 
             @Override
@@ -585,6 +596,29 @@ public class OpsReportRunners {
             }
 
             @Override
+            public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
+                Map<String, long[]> byCode = legService.countDelaysByCode(tenantId, from, to);
+                long minutes = byCode.values().stream().mapToLong(figures -> figures[0]).sum();
+                long occurrences = byCode.values().stream().mapToLong(figures -> figures[1]).sum();
+                Map.Entry<String, long[]> worst = byCode.entrySet().stream()
+                        .max(Comparator.comparingLong(entry -> entry.getValue()[0])).orElse(null);
+
+                return List.of(
+                        Rp.kpi("Delay records", String.valueOf(occurrences),
+                                byCode.size() + " distinct codes"),
+                        Rp.kpi("Total delay", Rp.dur(minutes / 60d), minutes + " minutes", "warn"),
+                        Rp.kpi("Average per record",
+                                occurrences == 0 ? Rp.EMPTY
+                                        : Math.round((double) minutes / occurrences) + " min",
+                                "across every coded delay"),
+                        Rp.kpi("Heaviest code", worst == null ? Rp.EMPTY : worst.getKey(),
+                                worst == null ? "none recorded"
+                                        : worst.getValue()[0] + " minutes over "
+                                                + worst.getValue()[1] + " records",
+                                worst == null ? "good" : "warn"));
+            }
+
+            @Override
             public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
                 List<Rp.Bucket> byCode = legService.countDelaysByCode(tenantId, from, to)
                         .entrySet().stream()
@@ -658,11 +692,35 @@ public class OpsReportRunners {
         return daily;
     }
 
-    private static long delayFreeDays(List<LegDto> legs) {
+    private static long delayFreeDays(List<LegDto> legs, Map<UUID, Long> recorded) {
         Map<LocalDate, Boolean> byDay = new HashMap<>();
-        legs.forEach(leg -> byDay.merge(leg.std().toLocalDate(), delay(leg) == 0,
+        legs.forEach(leg -> byDay.merge(leg.std().toLocalDate(), delay(leg, recorded) == 0,
                 (left, right) -> left && right));
         return byDay.values().stream().filter(Boolean::booleanValue).count();
+    }
+
+    /** Delay minutes recorded against each leg by the OCC, summed per leg. */
+    static Map<UUID, Long> recordedByLeg(LegService legService, UUID tenantId,
+                                         LocalDate from, LocalDate to) {
+        Map<UUID, Long> minutes = new HashMap<>();
+        for (LegDelayDto record : legService.findDelays(tenantId, from, to)) {
+            minutes.merge(record.legId(), (long) record.minutes(), Long::sum);
+        }
+        return minutes;
+    }
+
+    /**
+     * The delay of a sector: the recorded off-block time, or the OCC delay
+     * record, whichever is larger.
+     *
+     * <p>The two disagree more often than an operator expects. A sector held on
+     * stand for forty minutes carries a delay record; if nobody entered the
+     * actual OUT time, computing punctuality from the schedule alone would call
+     * it on time. Taking the larger of the two is the prototype's rule and the
+     * only one that cannot flatter the figure.
+     */
+    static long delay(LegDto leg, Map<UUID, Long> recorded) {
+        return Math.max(delay(leg), recorded.getOrDefault(leg.id(), 0L));
     }
 
     private static long flyingDays(List<LegDto> legs) {

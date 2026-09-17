@@ -24,7 +24,14 @@ import com.thenetworkplan.networkplan.safety.dto.SafetyOverviewDtos.TrendPointDt
 import com.thenetworkplan.networkplan.safety.mapper.SafetyMapper;
 import com.thenetworkplan.networkplan.safety.repository.AuditFindingRepository;
 import com.thenetworkplan.networkplan.safety.repository.AuditRepository;
+import com.thenetworkplan.networkplan.crew.dto.FtlExceedanceDto;
+import com.thenetworkplan.networkplan.crew.service.CrewDutyService;
+import com.thenetworkplan.networkplan.roster.dto.RosterVersionDto;
+import com.thenetworkplan.networkplan.roster.service.RosterService;
+import com.thenetworkplan.networkplan.safety.dto.SafetyOverviewDtos.RosterCheckDto;
+import com.thenetworkplan.networkplan.safety.repository.InvestigationRecommendationRepository;
 import com.thenetworkplan.networkplan.safety.repository.InvestigationRepository;
+import com.thenetworkplan.networkplan.safety.repository.InvestigationStepRepository;
 import com.thenetworkplan.networkplan.safety.repository.OccurrenceRepository;
 import com.thenetworkplan.networkplan.safety.repository.RiskMatrixRepository;
 import com.thenetworkplan.networkplan.safety.repository.SafetyActionRepository;
@@ -42,8 +49,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -78,6 +87,12 @@ public class SafetyOverviewServiceImpl implements SafetyOverviewService {
     private static final DateTimeFormatter MONTH =
             DateTimeFormatter.ofPattern("MMM", java.util.Locale.ENGLISH);
 
+    /** 28 jours : la plus longue fenetre glissante de l'ORO.FTL.210(a). */
+    private static final int ROSTER_CHECK_DAYS = 28;
+
+    private static final java.time.format.DateTimeFormatter ROSTER_MONTH =
+            java.time.format.DateTimeFormatter.ofPattern("MMMM yyyy", java.util.Locale.ENGLISH);
+
     private final OccurrenceRepository occurrenceRepository;
     private final SafetyActionRepository actionRepository;
     private final RiskMatrixRepository matrixRepository;
@@ -85,11 +100,15 @@ public class SafetyOverviewServiceImpl implements SafetyOverviewService {
     private final AuditFindingRepository findingRepository;
     private final SafetyChangeRepository changeRepository;
     private final InvestigationRepository investigationRepository;
+    private final InvestigationStepRepository stepRepository;
+    private final InvestigationRecommendationRepository recommendationRepository;
     private final SpiDefinitionRepository spiRepository;
     private final SettingRepository settingRepository;
     private final SafetyScan safetyScan;
     private final CamoService camoService;
     private final CrewPeopleService crewPeopleService;
+    private final CrewDutyService crewDutyService;
+    private final RosterService rosterService;
     private final SafetyMapper mapper;
 
     public SafetyOverviewServiceImpl(OccurrenceRepository occurrenceRepository,
@@ -99,11 +118,15 @@ public class SafetyOverviewServiceImpl implements SafetyOverviewService {
                                      AuditFindingRepository findingRepository,
                                      SafetyChangeRepository changeRepository,
                                      InvestigationRepository investigationRepository,
+                                    InvestigationStepRepository stepRepository,
+                                    InvestigationRecommendationRepository recommendationRepository,
                                      SpiDefinitionRepository spiRepository,
                                      SettingRepository settingRepository,
                                      SafetyScan safetyScan,
                                      CamoService camoService,
                                      CrewPeopleService crewPeopleService,
+                                     CrewDutyService crewDutyService,
+                                     RosterService rosterService,
                                      SafetyMapper mapper) {
         this.occurrenceRepository = occurrenceRepository;
         this.actionRepository = actionRepository;
@@ -112,11 +135,15 @@ public class SafetyOverviewServiceImpl implements SafetyOverviewService {
         this.findingRepository = findingRepository;
         this.changeRepository = changeRepository;
         this.investigationRepository = investigationRepository;
+        this.stepRepository = stepRepository;
+        this.recommendationRepository = recommendationRepository;
         this.spiRepository = spiRepository;
         this.settingRepository = settingRepository;
         this.safetyScan = safetyScan;
         this.camoService = camoService;
         this.crewPeopleService = crewPeopleService;
+        this.crewDutyService = crewDutyService;
+        this.rosterService = rosterService;
         this.mapper = mapper;
     }
 
@@ -174,6 +201,7 @@ public class SafetyOverviewServiceImpl implements SafetyOverviewService {
                 riskByDomain(occurrences, indexByCell),
                 investigations(tenantId, today),
                 changes(tenantId),
+                rosterCheck(tenantId, today),
                 accountability(tenantId, monitoring));
     }
 
@@ -278,6 +306,18 @@ public class SafetyOverviewServiceImpl implements SafetyOverviewService {
      * vrai le jour ou on l ecrit et faux le lendemain.
      */
     private List<InvestigationDto> investigations(UUID tenantId, LocalDate today) {
+        /* Deux requetes pour toute la page, pas deux par enquete : la chaine et
+           les recommandations arrivent groupees et se rattachent en memoire. */
+        Map<UUID, List<String>> steps = new java.util.HashMap<>();
+        stepRepository.findAllForTenant(tenantId).forEach(step ->
+                steps.computeIfAbsent(step.getInvestigation().getId(), key -> new ArrayList<>())
+                        .add(step.getStatement()));
+
+        Map<UUID, List<String>> recommendations = new java.util.HashMap<>();
+        recommendationRepository.findAllForTenant(tenantId).forEach(recommendation ->
+                recommendations.computeIfAbsent(recommendation.getInvestigation().getId(),
+                        key -> new ArrayList<>()).add(recommendation.getRecommendation()));
+
         return investigationRepository.findByTenantIdOrderByOpenedOnDesc(tenantId).stream()
                 .map(investigation -> new InvestigationDto(
                         investigation.getId(), investigation.getReference(),
@@ -290,8 +330,80 @@ public class SafetyOverviewServiceImpl implements SafetyOverviewService {
                         investigation.getContributingFactors(),
                         investigation.getClosedOn() == null
                                 && investigation.getTargetOn() != null
-                                && investigation.getTargetOn().isBefore(today)))
+                                && investigation.getTargetOn().isBefore(today),
+                        investigation.getProgressPercent(),
+                        steps.getOrDefault(investigation.getId(), List.of()),
+                        recommendations.getOrDefault(investigation.getId(), List.of())))
                 .toList();
+    }
+
+    /**
+     * Le roster publie, passe au moteur FTL.
+     *
+     * <p><b>Vingt-huit jours, pas une fenetre arbitraire.</b> Les plafonds de
+     * l'ORO.FTL.210(a) se comptent sur 7 et 28 jours glissants : lire moins
+     * loin annoncerait « aucun depassement » pour la seule raison qu'on n'a
+     * pas regarde assez loin.
+     *
+     * <p><b>Le meme moteur que la feuille FTL et le rapport des violations.</b>
+     * Trois copies de l'arithmetique seraient trois reponses, et le premier
+     * audit d'autorite les trouverait toutes les trois — l'echec precis qu'un
+     * SMS existe pour eviter.
+     *
+     * <p>Le nombre de gardes controlees voyage avec le verdict : « aucun
+     * depassement sur zero garde » n'est pas une assurance.
+     */
+    private RosterCheckDto rosterCheck(UUID tenantId, LocalDate today) {
+        /* Ce sont les MOIS PUBLIES qui sont controles, pas une fenetre glissante
+           choisie ici. L'annexe annonce « across September 2026 » parce qu'elle
+           a scanne le roster publie de septembre ; annoncer deux mois parce que
+           la fenetre en chevauche deux dirait au dirigeant responsable qu'on a
+           verifie un mois qui n'est peut-etre meme pas publie. */
+        List<RosterVersionDto> published = rosterService.findVersions(tenantId).stream()
+                .filter(version -> "PUBLISHED".equals(version.status()))
+                .toList();
+
+        if (published.isEmpty()) {
+            return new RosterCheckDto(List.of(), 0, 0, 0, List.of());
+        }
+
+        LocalDate from = published.stream().map(RosterVersionDto::periodStart)
+                .min(LocalDate::compareTo).orElse(today);
+        LocalDate to = published.stream().map(RosterVersionDto::periodEnd)
+                .max(LocalDate::compareTo).orElse(today);
+
+        Set<YearMonth> covered = new java.util.TreeSet<>();
+        published.forEach(version -> {
+            for (YearMonth month = YearMonth.from(version.periodStart());
+                    !month.isAfter(YearMonth.from(version.periodEnd())); month = month.plusMonths(1)) {
+                covered.add(month);
+            }
+        });
+        List<String> months = covered.stream().map(month -> month.format(ROSTER_MONTH)).toList();
+
+        /* Le moteur lit 27 jours avant le debut publie pour que le plafond
+           glissant de 28 jours ait de quoi se calculer — mais seuls les
+           depassements qui TOMBENT dans un mois publie sont rapportes. Compter
+           ceux d'avant ferait porter au roster publie des journees qu'il ne
+           couvre pas. */
+        List<FtlExceedanceDto> exceedances = crewDutyService
+                .findExceedances(tenantId, from.minusDays(ROSTER_CHECK_DAYS - 1L), to).stream()
+                .filter(breach -> covered.contains(YearMonth.from(breach.day())))
+                .toList();
+
+        // Les quatre equipages les plus concernes : au-dela, la banniere
+        // devient une liste que personne ne lit.
+        Map<String, Long> byCrew = new LinkedHashMap<>();
+        exceedances.forEach(breach -> byCrew.merge(breach.crewName(), 1L, Long::sum));
+        List<String> worst = byCrew.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(4)
+                .map(entry -> entry.getKey() + " (" + entry.getValue() + ")")
+                .toList();
+
+        int duties = crewDutyService.findDuties(tenantId, from, to).size();
+        int days = (int) (to.toEpochDay() - from.toEpochDay() + 1);
+        return new RosterCheckDto(months, days, duties, exceedances.size(), worst);
     }
 
     /**

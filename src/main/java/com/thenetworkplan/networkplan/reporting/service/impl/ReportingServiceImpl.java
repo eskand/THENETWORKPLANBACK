@@ -55,6 +55,9 @@ public class ReportingServiceImpl implements ReportingService {
             lastRun.putIfAbsent(run.getDefinition().getId(), run);
         }
         return definitionRepository.findByTenantIdOrderByDomainAscCodeAsc(tenantId).stream()
+                .sorted(java.util.Comparator
+                        .comparingInt(ReportDefinition::getMenuOrder)
+                        .thenComparing(ReportDefinition::getCode))
                 .map(definition -> {
                     ReportRun run = lastRun.get(definition.getId());
                     return new ReportDefinitionDto(
@@ -66,6 +69,7 @@ public class ReportingServiceImpl implements ReportingService {
                             definition.getModule(),
                             definition.getSubtitle(),
                             definition.getScope(),
+                            definition.getMenuOrder(),
                             runners.containsKey(definition.getCode()),
                             definition.getDefaultWindowDays(),
                             run == null ? null : run.getRanAt(),

@@ -79,7 +79,17 @@ public final class SafetyOverviewDtos {
             String method,
             String rootCause,
             String contributingFactors,
-            boolean overdue) implements Serializable {
+            boolean overdue,
+            /** Declared by the investigator, 0 to 100. Never derived from dates. */
+            int progressPercent,
+            /**
+             * The five-why chain, in order: the first link is what happened, the
+             * last is the organisational condition that allowed it — and the last
+             * is the one a corrective action has to attack.
+             */
+            List<String> steps,
+            /** Safety recommendations arising from the analysis, in order. */
+            List<String> recommendations) implements Serializable {
     }
 
     public record SafetyChangeDto(
@@ -112,7 +122,18 @@ public final class SafetyOverviewDtos {
             String domain,
             String severity,
             String subject,
-            String detail) implements Serializable {
+            String detail,
+            /**
+             * What the operator has to do about it, in the imperative.
+             *
+             * <p>A finding without a required action is an observation, and the
+             * prototype prints the action in italics under every line because a
+             * monitoring screen that only names problems makes the reader invent
+             * the remedy.
+             */
+            String requiredAction,
+            /** The route of the module that owns it, so the row can open it. */
+            String route) implements Serializable {
     }
 
     /** The scan's result: the findings, and how many of each severity. */
@@ -162,6 +183,27 @@ public final class SafetyOverviewDtos {
     }
 
     /** Who answers for the safety management system. */
+    /**
+     * The published roster, checked against the flight-time limitations.
+     *
+     * <p>The annexe opens the Safety Overview with this line because it is the
+     * one an accountable manager reads first: whether the roster crews are
+     * actually flying is legal. A nil return is only as good as the roster
+     * behind it, so {@code dutiesChecked} travels with it — « no exceedance
+     * across nothing » is not an assurance.
+     *
+     * @param months       the calendar months covered, as an operator names them
+     * @param exceedances  how many breaches the FTL engine found
+     * @param crewAffected the crew members concerned, at most four
+     */
+    public record RosterCheckDto(
+            List<String> months,
+            int daysChecked,
+            int dutiesChecked,
+            int exceedances,
+            List<String> crewAffected) implements Serializable {
+    }
+
     public record AccountabilityDto(
             String accountableManager,
             String safetyManager,
@@ -191,6 +233,8 @@ public final class SafetyOverviewDtos {
             List<InvestigationDto> investigations,
             /** Les changements sous gestion du changement (annexe 19, composante 3). */
             List<SafetyChangeDto> changes,
+            /** Le roster publie, passe au moteur FTL : la premiere ligne de l ecran. */
+            RosterCheckDto rosterCheck,
             AccountabilityDto accountability) implements Serializable {
     }
 }

@@ -103,9 +103,16 @@ public class SafetyScanImpl implements SafetyScan {
                             ? expiry.kind() + " expired " + Math.abs(days) + " days ago"
                             : expiry.kind() + " expires in " + days + " days";
 
+            String action = days == null
+                    ? "Record the expiry date, or treat the crew member as not current."
+                    : days < 0
+                            ? "Suspend from line duty until the recurrent item is completed."
+                            : "Schedule the renewal before the date above.";
+
             findings.add(new MonitoringFindingDto(
                     "CREW-" + expiry.kind() + "-" + expiry.personId(),
-                    domainOf(expiry.kind()), severity, expiry.fullName(), detail));
+                    domainOf(expiry.kind()), severity, expiry.fullName(), detail,
+                    action, route(domainOf(expiry.kind()))));
         }
     }
 
@@ -124,22 +131,30 @@ public class SafetyScanImpl implements SafetyScan {
                 findings.add(new MonitoringFindingDto(
                         "ARC-" + row.registration(), "CAMO", "critical", row.registration(),
                         "Airworthiness review certificate expired "
-                                + Math.abs(row.arcDaysLeft()) + " days ago"));
+                                + Math.abs(row.arcDaysLeft()) + " days ago",
+                        "Ground the aircraft and raise an ARC renewal with the CAMO "
+                                + "(Part-M.A.901).", "/camo"));
             } else if ("NONE".equals(row.arcVerdict())) {
                 findings.add(new MonitoringFindingDto(
                         "ARC-" + row.registration(), "CAMO", "critical", row.registration(),
-                        "No airworthiness review certificate on file"));
+                        "No airworthiness review certificate on file",
+                        "Locate the certificate and file it, or the aircraft may not be "
+                                + "released to service.", "/camo"));
             } else if ("CRITICAL".equals(row.arcVerdict())) {
                 findings.add(new MonitoringFindingDto(
                         "ARC-" + row.registration(), "CAMO", "high", row.registration(),
-                        "Airworthiness review certificate expires in " + row.arcDaysLeft() + " days"));
+                        "Airworthiness review certificate expires in " + row.arcDaysLeft() + " days",
+                        "Start the ARC renewal now — a review takes longer than the margin "
+                                + "left.", "/camo"));
             }
 
             if (row.overdueTasks() > 0) {
                 findings.add(new MonitoringFindingDto(
                         "MX-" + row.registration(), "CAMO", "critical", row.registration(),
                         row.overdueTasks() + " maintenance task"
-                                + (row.overdueTasks() > 1 ? "s" : "") + " past a limit"));
+                                + (row.overdueTasks() > 1 ? "s" : "") + " past a limit",
+                        "Do not operate until the task is closed or an approved extension "
+                                + "is recorded.", "/camo"));
             }
 
             if (!"SERVICEABLE".equals(row.status())) {
@@ -147,7 +162,9 @@ public class SafetyScanImpl implements SafetyScan {
                         "AC-" + row.registration(), "CAMO", "high", row.registration(),
                         row.statusReason() == null
                                 ? "Aircraft is " + row.status().toLowerCase()
-                                : row.statusReason()));
+                                : row.statusReason(),
+                        "Confirm the aircraft is out of the published programme while it "
+                                + "is unserviceable.", "/camo"));
             }
         }
 
@@ -158,7 +175,9 @@ public class SafetyScanImpl implements SafetyScan {
             }
             findings.add(new MonitoringFindingDto(
                     "LLP-" + part.id(), "CAMO", "high", part.registration(),
-                    part.name() + " at " + part.percentRemaining() + "% of life remaining"));
+                    part.name() + " at " + part.percentRemaining() + "% of life remaining",
+                    "Plan the replacement: a life-limited part grounds the aircraft on a "
+                            + "date nobody scheduled.", "/camo"));
         }
     }
 
@@ -184,14 +203,37 @@ public class SafetyScanImpl implements SafetyScan {
                 if (overdue) {
                     findings.add(new MonitoringFindingDto(
                             "MEL-" + item.id(), "TECHLOG", "critical", registration,
-                            item.reference() + " — " + item.title() + " past its rectification interval"));
+                            item.reference() + " — " + item.title() + " past its rectification interval",
+                            "The deferral has lapsed: this is now an open defect and must be "
+                                    + "rectified before flight.", "/mel"));
                 } else if (item.blocksDispatch()) {
                     findings.add(new MonitoringFindingDto(
                             "MEL-" + item.id(), "TECHLOG", "high", registration,
-                            item.reference() + " — " + item.title() + " blocks dispatch"));
+                            item.reference() + " — " + item.title() + " blocks dispatch",
+                            "Rectify, or confirm the aircraft is not offered until it is "
+                                    + "cleared.", "/mel"));
                 }
             }
         }
+    }
+
+    /**
+     * The screen that owns a finding, so a row can open it.
+     *
+     * <p>A monitoring page that names a problem and leaves the reader to find
+     * the module is a page that gets read once. Every finding carries the route
+     * of the screen where it is actually fixed.
+     */
+    private static String route(String domain) {
+        return switch (domain == null ? "" : domain) {
+            case "CAMO" -> "/camo";
+            case "TECHLOG" -> "/tech-log";
+            case "TRAINING" -> "/training";
+            case "CREW" -> "/crew-management";
+            case "OPS" -> "/flight-timeline";
+            case "OCC" -> "/dispatch";
+            default -> "/occ";
+        };
     }
 
     /** A licence and a type rating do not belong to the same part of the system. */

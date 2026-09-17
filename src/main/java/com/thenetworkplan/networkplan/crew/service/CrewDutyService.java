@@ -1,6 +1,7 @@
 package com.thenetworkplan.networkplan.crew.service;
 
 import com.thenetworkplan.networkplan.crew.dto.CrewDutyDto;
+import com.thenetworkplan.networkplan.crew.dto.FtlExceedanceDto;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -27,4 +28,20 @@ public interface CrewDutyService {
      * their own line.
      */
     List<CrewDutyDto> findDuties(UUID tenantId, LocalDate from, LocalDate to);
+
+    /**
+     * Every flight-time-limitation exceedance in the window.
+     *
+     * <p><b>One engine, three readers.</b> The FTL sheet, the FTL violations
+     * report and the Safety Manager's roster banner all ask this method. Three
+     * copies of the arithmetic would be three answers, and the first authority
+     * audit would find all three — which is the precise failure an SMS exists
+     * to prevent.
+     *
+     * <p>Checks applied: the maximum daily FDP of ORO.FTL.205 Table 2, the
+     * minimum rest of ORO.FTL.235(a), and the rolling 60 h / 7 days and
+     * 190 h / 28 days ceilings of ORO.FTL.210(a). Rest and days off are
+     * excluded — they are recorded as duty periods but consume no duty time.
+     */
+    List<FtlExceedanceDto> findExceedances(UUID tenantId, LocalDate from, LocalDate to);
 }

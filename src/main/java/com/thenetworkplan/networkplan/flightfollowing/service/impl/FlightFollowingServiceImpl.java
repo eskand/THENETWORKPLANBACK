@@ -13,6 +13,7 @@ import com.thenetworkplan.networkplan.crew.dto.LegCrewDto;
 import com.thenetworkplan.networkplan.crew.service.CrewAssignmentService;
 import com.thenetworkplan.networkplan.flightfollowing.dto.FollowedFlightDto;
 import com.thenetworkplan.networkplan.flightfollowing.service.AdsbIngestService;
+import com.thenetworkplan.networkplan.flightfollowing.service.LegRiskAssessor;
 import com.thenetworkplan.networkplan.flightfollowing.service.SmsRiskRule;
 import com.thenetworkplan.networkplan.flightfollowing.dto.FollowingBoardDto;
 import com.thenetworkplan.networkplan.flightfollowing.dto.PositionDto;
@@ -60,7 +61,7 @@ public class FlightFollowingServiceImpl implements FlightFollowingService {
     private final FlightFollowingMapper mapper;
     private final AircraftService aircraftService;
     private final CrewAssignmentService crewAssignmentService;
-    private final SmsRiskRule smsRiskRule;
+    private final LegRiskAssessor legRiskAssessor;
     private final AdsbIngestService adsbIngestService;
     private final EntityManager entityManager;
 
@@ -70,7 +71,7 @@ public class FlightFollowingServiceImpl implements FlightFollowingService {
                                       FlightFollowingMapper mapper,
                                       AircraftService aircraftService,
                                       CrewAssignmentService crewAssignmentService,
-                                      SmsRiskRule smsRiskRule,
+                                      LegRiskAssessor legRiskAssessor,
                                       AdsbIngestService adsbIngestService,
                                       EntityManager entityManager) {
         this.legRepository = legRepository;
@@ -79,7 +80,7 @@ public class FlightFollowingServiceImpl implements FlightFollowingService {
         this.mapper = mapper;
         this.aircraftService = aircraftService;
         this.crewAssignmentService = crewAssignmentService;
-        this.smsRiskRule = smsRiskRule;
+        this.legRiskAssessor = legRiskAssessor;
         this.adsbIngestService = adsbIngestService;
         this.entityManager = entityManager;
     }
@@ -144,7 +145,9 @@ public class FlightFollowingServiceImpl implements FlightFollowingService {
 
             MelItemDto mel = worstMel(melByAircraft.get(leg.getAircraft().getId()));
             LegCrewDto crew = crewByLeg.get(leg.getId());
-            SmsRiskRule.Assessment risk = riskOf(leg, mel, crew);
+            /* Le meme moteur que le tableau de dispatch lit — voir
+               LegRiskAssessor : deux ecrans, une image du risque. */
+            SmsRiskRule.Assessment risk = legRiskAssessor.assess(mel, crew);
             switch (risk.level()) {
                 case "CRITICAL" -> riskCritical++;
                 case "HIGH" -> riskHigh++;
@@ -234,62 +237,6 @@ public class FlightFollowingServiceImpl implements FlightFollowingService {
         return mapper.toDto(positionRepository.save(position), now);
     }
 
-    /**
-     * Progress in time, not in distance: without a route there is no distance
-     * flown, and guessing one is what the product must not do.
-     */
-    /**
-     * Le risque SMS de cette etape, sur les faits que la base porte.
-     *
-     * <p>Trois facteurs sont lus (MEL, FTL, equipage), deux ne le sont pas
-     * encore : la meteo de destination et les NOTAM ne sont pas encore
-     * rattaches a l etape. Ils sont scores UNKNOWN, pas NONE — le prototype
-     * lisait une absence de donnee comme une bonne nouvelle, et c est le
-     * defaut le plus dangereux qui soit.
-     */
-    private SmsRiskRule.Assessment riskOf(Leg leg, MelItemDto mel, LegCrewDto crew) {
-        List<SmsRiskRule.Scored> factors = new ArrayList<>(5);
-
-        factors.add(new SmsRiskRule.Scored(SmsRiskRule.Factor.WEATHER,
-                SmsRiskRule.Level.UNKNOWN,
-                "Destination weather not yet attached to the leg"));
-        factors.add(new SmsRiskRule.Scored(SmsRiskRule.Factor.NOTAM,
-                SmsRiskRule.Level.UNKNOWN,
-                "NOTAM digest not yet attached to the leg"));
-
-        String ftl = crew == null ? null : crew.ftlStatus();
-        factors.add(new SmsRiskRule.Scored(SmsRiskRule.Factor.FTL,
-                switch (ftl == null ? "UNKNOWN" : ftl) {
-                    case "OK" -> SmsRiskRule.Level.NONE;
-                    case "WARNING" -> SmsRiskRule.Level.MODERATE;
-                    case "BREACH" -> SmsRiskRule.Level.SEVERE;
-                    default -> SmsRiskRule.Level.UNKNOWN;
-                },
-                ftl == null ? "No crew assigned to this leg" : "Crew FTL: " + ftl.toLowerCase()));
-
-        factors.add(new SmsRiskRule.Scored(SmsRiskRule.Factor.MEL,
-                mel == null ? SmsRiskRule.Level.NONE
-                        : mel.blocksDispatch() ? SmsRiskRule.Level.MAJOR : SmsRiskRule.Level.MINOR,
-                mel == null ? "No open MEL item"
-                        : mel.reference() + (mel.blocksDispatch()
-                                ? " — major MEL, degraded" : " — minor MEL")));
-
-        String documents = crew == null ? null : crew.documentStatus();
-        boolean incomplete = crew != null && !crew.complete();
-        factors.add(new SmsRiskRule.Scored(SmsRiskRule.Factor.CREW,
-                crew == null ? SmsRiskRule.Level.UNKNOWN
-                        : "EXPIRED".equals(documents) ? SmsRiskRule.Level.MAJOR
-                        : incomplete ? SmsRiskRule.Level.MODERATE
-                        : SmsRiskRule.Level.NONE,
-                crew == null ? "No crew record for this leg"
-                        : "EXPIRED".equals(documents) ? "A crew document has expired"
-                        : incomplete ? crew.seatsFilled() + " of " + crew.minimumSeats()
-                                + " flight-deck seats filled"
-                        : "Crew complete and current"));
-
-        return smsRiskRule.assess(factors);
-    }
-
     /** FL de la derniere position connue, ou null si personne ne l a dit. */
     private Integer flightLevelOf(PositionDto position) {
         if (position == null || position.altitudeFt() == null) {
@@ -326,6 +273,10 @@ public class FlightFollowingServiceImpl implements FlightFollowingService {
         return items.stream().max(Comparator.comparing(MelItemDto::blocksDispatch)).orElse(null);
     }
 
+    /**
+     * Progress in time, not in distance: without a route there is no distance
+     * flown, and guessing one is what the product must not do.
+     */
     private Integer progressPercent(Leg leg, OffsetDateTime now) {
         if (leg.getStatus() != LegStatus.DEPARTED) {
             return null;

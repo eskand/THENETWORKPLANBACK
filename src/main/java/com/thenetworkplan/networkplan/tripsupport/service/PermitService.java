@@ -4,6 +4,7 @@ import com.thenetworkplan.networkplan.tripsupport.dto.CreatePermitRequestCommand
 import com.thenetworkplan.networkplan.tripsupport.dto.LegPermitsDto;
 import com.thenetworkplan.networkplan.tripsupport.dto.LegPermitsSummary;
 import com.thenetworkplan.networkplan.tripsupport.dto.PermitRequestDto;
+import com.thenetworkplan.networkplan.tripsupport.dto.UpdatePermitRequestDetailsCommand;
 import com.thenetworkplan.networkplan.tripsupport.dto.UpdateRequestStatusCommand;
 import java.util.Collection;
 import java.util.Map;
@@ -31,4 +32,10 @@ public interface PermitService {
     PermitRequestDto create(UUID tenantId, UUID legId, CreatePermitRequestCommand command);
 
     PermitRequestDto updateStatus(UUID tenantId, UUID requestId, UpdateRequestStatusCommand command);
+
+    /** Corriger le pays, la nature ou le destinataire d'une demande non engagee. */
+    PermitRequestDto updateDetails(UUID tenantId, UUID requestId, UpdatePermitRequestDetailsCommand command);
+
+    /** Same rule as a ground service: a draft can be removed, a sent request cannot. */
+    void delete(UUID tenantId, UUID requestId);
 }

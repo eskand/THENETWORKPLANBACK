@@ -31,6 +31,21 @@ public class MetarParserImpl implements MetarParser {
     private static final Pattern DAY_TIME = Pattern.compile("^(\\d{2})(\\d{2})(\\d{2})Z$");
     private static final Pattern WIND = Pattern.compile("^(\\d{3}|VRB)(\\d{2,3})(?:G(\\d{2,3}))?(KT|MPS)$");
     private static final Pattern VISIBILITY = Pattern.compile("^(\\d{4})(NDV)?$");
+    /**
+     * La visibilite en milles terrestres — la forme nord-americaine.
+     *
+     * <p>{@code 10SM}, {@code 3SM}, {@code 1/2SM}, {@code M1/4SM} (« moins de »),
+     * et la forme mixte {@code 1 1/2SM}, dont la partie entiere arrive comme un
+     * jeton separe. Sans cette lecture, tout aerodrome americain ressortait
+     * « visibilite non rapportee » alors que le message la donne : KJFK
+     * {@code 10SM} etait lu comme une donnee manquante.
+     */
+    private static final Pattern VISIBILITY_SM =
+            Pattern.compile("^(M)?(\\d{1,2})(?:/(\\d{1,2}))?SM$");
+    /** La partie entiere d'une visibilite mixte, isolee avant la fraction. */
+    private static final Pattern WHOLE_MILES = Pattern.compile("^([1-9]\\d?)$");
+    /** Un mille terrestre, en metres. */
+    private static final double METRES_PER_STATUTE_MILE = 1609.344;
     private static final Pattern CLOUD = Pattern.compile("^(FEW|SCT|BKN|OVC|VV)(\\d{3})(CB|TCU)?$");
     private static final Pattern TEMPERATURE = Pattern.compile("^(M?\\d{2})/(M?\\d{2})$");
     private static final Pattern QNH_HPA = Pattern.compile("^Q(\\d{4})$");
@@ -70,6 +85,7 @@ public class MetarParserImpl implements MetarParser {
         Integer windGust = null;
         boolean windVariable = false;
         Integer visibility = null;
+        Integer pendingWholeMiles = null;
         boolean cavok = false;
         Integer ceiling = null;
         Integer temperature = null;
@@ -111,8 +127,32 @@ public class MetarParserImpl implements MetarParser {
             }
             if (visibility == null && (matcher = VISIBILITY.matcher(token)).matches()) {
                 visibility = Integer.parseInt(matcher.group(1));
+                pendingWholeMiles = null;
                 continue;
             }
+            if (visibility == null && (matcher = VISIBILITY_SM.matcher(token)).matches()) {
+                double miles = Integer.parseInt(matcher.group(2));
+                if (matcher.group(3) != null) {
+                    miles = miles / Integer.parseInt(matcher.group(3));
+                }
+                // « 1 1/2SM » : la partie entiere est arrivee au jeton precedent.
+                if (pendingWholeMiles != null) {
+                    miles += pendingWholeMiles;
+                }
+                // 10SM veut dire « dix milles ou plus », comme 9999 veut dire
+                // « dix kilometres ou plus » : on borne a 9999 pour que l'ecran
+                // ecrive « > 10 km » plutot qu'une distance mesuree de 16 093 m.
+                visibility = (int) Math.min(9999, Math.round(miles * METRES_PER_STATUTE_MILE));
+                pendingWholeMiles = null;
+                continue;
+            }
+            // Retenu au cas ou le jeton suivant serait la fraction d'une
+            // visibilite mixte ; ecarte des qu'autre chose est reconnu.
+            if (visibility == null && WHOLE_MILES.matcher(token).matches()) {
+                pendingWholeMiles = Integer.valueOf(token);
+                continue;
+            }
+            pendingWholeMiles = null;
             if ((matcher = CLOUD.matcher(token)).matches()) {
                 String cover = matcher.group(1);
                 int feet = Integer.parseInt(matcher.group(2)) * 100;

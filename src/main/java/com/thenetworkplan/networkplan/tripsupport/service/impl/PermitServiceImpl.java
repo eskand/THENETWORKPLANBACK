@@ -14,6 +14,7 @@ import com.thenetworkplan.networkplan.tripsupport.dto.LegPermitsDto;
 import com.thenetworkplan.networkplan.tripsupport.dto.LegPermitsSummary;
 import com.thenetworkplan.networkplan.tripsupport.dto.LegRequestCount;
 import com.thenetworkplan.networkplan.tripsupport.dto.PermitRequestDto;
+import com.thenetworkplan.networkplan.tripsupport.dto.UpdatePermitRequestDetailsCommand;
 import com.thenetworkplan.networkplan.tripsupport.dto.UpdateRequestStatusCommand;
 import com.thenetworkplan.networkplan.tripsupport.mapper.TripSupportMapper;
 import com.thenetworkplan.networkplan.tripsupport.repository.CountryStatusRepository;
@@ -153,5 +154,43 @@ public class PermitServiceImpl implements PermitService {
                 .stream()
                 .map(mapper::toDto)
                 .toList();
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(cacheNames = CacheNames.DISPATCH_BOARD, allEntries = true)
+    public void delete(UUID tenantId, UUID requestId) {
+        PermitRequest request = permitRepository.findByTenantIdAndId(tenantId, requestId)
+                .orElseThrow(() -> ResourceNotFoundException.of("Permit request", requestId));
+        if (request.getStatus() != RequestStatus.DRAFT) {
+            throw new BusinessRuleException("PERMIT_REQUEST_SENT",
+                    "This permit request has already been sent: mark it refused rather than deleting the trace");
+        }
+        permitRepository.delete(request);
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(cacheNames = CacheNames.DISPATCH_BOARD, allEntries = true)
+    public PermitRequestDto updateDetails(UUID tenantId, UUID requestId,
+                                          UpdatePermitRequestDetailsCommand command) {
+        PermitRequest request = permitRepository.findByTenantIdAndId(tenantId, requestId)
+                .orElseThrow(() -> ResourceNotFoundException.of("Permit request", requestId));
+        if (request.getStatus() != RequestStatus.DRAFT && request.getStatus() != RequestStatus.REFUSED) {
+            throw new BusinessRuleException("PERMIT_REQUEST_ENGAGED",
+                    "This permit request is with the authority: revise it rather than rewriting what was sent");
+        }
+        request.setCountryIso2(command.countryIso2().trim().toUpperCase());
+        request.setKind(parseKind(command.kind()));
+        request.setRecipient(command.recipient());
+        return mapper.toDto(permitRepository.save(request));
+    }
+
+    private PermitKind parseKind(String raw) {
+        try {
+            return PermitKind.valueOf(raw.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            throw new BusinessRuleException("PERMIT_KIND_UNKNOWN", "Unknown permit kind: " + raw);
+        }
     }
 }

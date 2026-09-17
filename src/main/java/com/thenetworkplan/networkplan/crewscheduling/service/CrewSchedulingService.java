@@ -2,6 +2,7 @@ package com.thenetworkplan.networkplan.crewscheduling.service;
 
 import com.thenetworkplan.networkplan.crew.dto.CrewMemberDto;
 import com.thenetworkplan.networkplan.crewscheduling.dto.AssignSeatCommand;
+import com.thenetworkplan.networkplan.crewscheduling.dto.RecordCheckTimesCommand;
 import com.thenetworkplan.networkplan.crewscheduling.dto.SchedulingBoardDto;
 import java.time.LocalDate;
 import java.util.UUID;
@@ -19,4 +20,7 @@ public interface CrewSchedulingService {
     CrewMemberDto assign(UUID tenantId, UUID legId, AssignSeatCommand command, UUID actorId);
 
     void unassign(UUID tenantId, UUID assignmentId);
+
+    /** Les heures reelles de prise et de fin de service — onglet CREW du dossier de vol. */
+    CrewMemberDto recordCheckTimes(UUID tenantId, UUID assignmentId, RecordCheckTimesCommand command);
 }

@@ -45,6 +45,8 @@ public class LegMapper {
                 leg.getCtot(),
                 leg.getStatus().name(),
                 leg.getFlightType().name(),
+                leg.getCommercialType().name(),
+                leg.getCommercialType().flightPlanLetter(leg.getFlightType()),
                 leg.getPaxCount(),
                 leg.getRiskLevel() == null ? null : leg.getRiskLevel().name(),
                 leg.getMvtSentAt(),

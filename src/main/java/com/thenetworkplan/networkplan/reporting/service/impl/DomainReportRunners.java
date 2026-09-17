@@ -1,13 +1,14 @@
 package com.thenetworkplan.networkplan.reporting.service.impl;
 
 import com.thenetworkplan.networkplan.camo.service.CamoService;
-import com.thenetworkplan.networkplan.crew.service.CrewPeopleService;
 import com.thenetworkplan.networkplan.mel.service.MelService;
+import com.thenetworkplan.networkplan.reporting.dto.ReportDtos.ReportChartDto;
+import com.thenetworkplan.networkplan.reporting.dto.ReportDtos.ReportKpiDto;
 import com.thenetworkplan.networkplan.reporting.service.ReportRunner;
-import com.thenetworkplan.networkplan.safety.service.SafetyService;
 import com.thenetworkplan.networkplan.sales.service.SalesService;
 import com.thenetworkplan.networkplan.tripsupport.service.PermitService;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
@@ -15,89 +16,22 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * The seven reports of the other domains.
+ * The reports this product answers that the approved prototype does not ask.
  *
- * <p>Each one asks the owning module's service; none reads another schema.
- * That is the whole point of the runner: the reporting module knows how to
- * lay out a table, and nothing about anybody's tables.
+ * <p><b>Why they are kept, and kept apart.</b> The maintenance due list, the
+ * MEL items in force and the outstanding permits are questions the application
+ * already answers and somebody already reads; removing them to match the
+ * annexe's catalogue exactly would take a working answer away. They sit in
+ * their own configuration so that what is inside the approved perimeter and
+ * what is beyond it can be told apart at a glance.
+ *
+ * <p>The commercial pipeline is in the annexe, and is here because it belongs
+ * to the sales module like the other three belong to theirs.
  */
 @Configuration
 public class DomainReportRunners {
 
-    @Bean
-    ReportRunner crewBlockTimeReport(CrewPeopleService crewPeopleService) {
-        return new ReportRunner() {
-            @Override
-            public String code() {
-                return "CREW-FTL";
-            }
-
-            @Override
-            public List<String> columns() {
-                return List.of("Staff", "Name", "Role", "Block 7 d", "Block 28 d", "Block 365 d", "Documents");
-            }
-
-            @Override
-            public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                return crewPeopleService.findAll(tenantId, null, null, true).stream()
-                        .map(person -> List.of(
-                                person.staffNo(),
-                                person.fullName(),
-                                person.mainRole(),
-                                hhmm(person.blockMinutes7d()),
-                                hhmm(person.blockMinutes28d()),
-                                hhmm(person.blockMinutes365d()),
-                                person.documentStatus()))
-                        .toList();
-            }
-
-            @Override
-            public String note() {
-                return "Rolling windows ending today, summed from crew.duty_periods. These are "
-                        + "totals, not a legality verdict: the comparison with ORO.FTL.210 belongs "
-                        + "to the FTL engine of sprint S7.";
-            }
-        };
-    }
-
-    @Bean
-    ReportRunner crewExpiriesReport(CrewPeopleService crewPeopleService) {
-        return new ReportRunner() {
-            @Override
-            public String code() {
-                return "CREW-EXP";
-            }
-
-            @Override
-            public List<String> columns() {
-                return List.of("Staff", "Name", "Role", "What expires", "Subject",
-                        "Expires on", "Days left", "Status");
-            }
-
-            @Override
-            public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                int horizon = (int) Math.max(1, ChronoUnit.DAYS.between(LocalDate.now(), to));
-                return crewPeopleService.findExpiring(tenantId, horizon).stream()
-                        .map(expiry -> List.of(
-                                expiry.staffNo(),
-                                expiry.fullName(),
-                                expiry.mainRole(),
-                                expiry.kind(),
-                                nullSafe(expiry.subject()),
-                                nullSafe(expiry.expiresOn()),
-                                nullSafe(expiry.daysRemaining()),
-                                expiry.status()))
-                        .toList();
-            }
-
-            @Override
-            public String note() {
-                return "Licences, medicals, recurrent training and qualifications lapsing before "
-                        + "the end of the window, worst first. A document with no date on file is "
-                        + "included and shown as UNKNOWN — it is not treated as valid.";
-            }
-        };
-    }
+    /* ── the maintenance due list ─────────────────────────────────────────── */
 
     @Bean
     ReportRunner maintenanceDueReport(CamoService camoService) {
@@ -108,6 +42,21 @@ public class DomainReportRunners {
             }
 
             @Override
+            public String module() {
+                return "Maintenance";
+            }
+
+            @Override
+            public String subtitle() {
+                return "Tasks falling due inside the window, and everything already overdue";
+            }
+
+            @Override
+            public String scope() {
+                return "Fleet applied; period is the due window";
+            }
+
+            @Override
             public List<String> columns() {
                 return List.of("Tail", "Task", "Title", "Due on", "Days left",
                         "Hours left", "Cycles left", "Driven by", "Status");
@@ -115,19 +64,49 @@ public class DomainReportRunners {
 
             @Override
             public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                int horizon = (int) Math.max(1, ChronoUnit.DAYS.between(LocalDate.now(), to));
-                return camoService.findDueList(tenantId, horizon).stream()
+                return camoService.findDueList(tenantId, horizon(to)).stream()
                         .map(item -> List.of(
                                 item.registration(),
                                 item.code(),
                                 item.title(),
-                                nullSafe(item.dueOn()),
-                                nullSafe(item.remainingDays()),
-                                nullSafe(item.remainingHours()),
-                                nullSafe(item.remainingCycles()),
+                                Rp.text(item.dueOn()),
+                                Rp.text(item.remainingDays()),
+                                Rp.text(item.remainingHours()),
+                                Rp.text(item.remainingCycles()),
                                 item.drivingLimit(),
                                 item.status()))
                         .toList();
+            }
+
+            @Override
+            public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
+                var due = camoService.findDueList(tenantId, horizon(to));
+                long overdue = due.stream()
+                        .filter(item -> "OVERDUE".equalsIgnoreCase(item.status())).count();
+                long unknown = due.stream()
+                        .filter(item -> "UNKNOWN".equalsIgnoreCase(item.status())).count();
+                return List.of(
+                        Rp.kpi("Tasks due", String.valueOf(due.size()),
+                                "inside the window, plus everything overdue"),
+                        Rp.kpi("Overdue", String.valueOf(overdue),
+                                overdue == 0 ? "none" : "cannot be released",
+                                overdue == 0 ? "good" : "bad"),
+                        Rp.kpi("Aircraft affected",
+                                String.valueOf(due.stream().map(item -> item.registration())
+                                        .distinct().count()), "with at least one task due"),
+                        Rp.kpi("No limit on file", String.valueOf(unknown),
+                                unknown == 0 ? "every task has a limit" : "counted as unknown",
+                                Rp.countTone(unknown)));
+            }
+
+            @Override
+            public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
+                var due = camoService.findDueList(tenantId, horizon(to));
+                return List.of(
+                        Rp.bar("rpc1", "Tasks due by aircraft", "half",
+                                Rp.tally(due, item -> item.registration()), Rp.NAVY2),
+                        Rp.donut("rpc2", "By driving limit", "half",
+                                Rp.tally(due, item -> item.drivingLimit())));
             }
 
             @Override
@@ -138,12 +117,29 @@ public class DomainReportRunners {
         };
     }
 
+    /* ── the MEL items in force ───────────────────────────────────────────── */
+
     @Bean
     ReportRunner melReport(MelService melService) {
         return new ReportRunner() {
             @Override
             public String code() {
                 return "MX-MEL";
+            }
+
+            @Override
+            public String module() {
+                return "Maintenance";
+            }
+
+            @Override
+            public String subtitle() {
+                return "Deferrals in force today, with their rectification interval";
+            }
+
+            @Override
+            public String scope() {
+                return "Fleet applied; period is the due window";
             }
 
             @Override
@@ -161,11 +157,41 @@ public class DomainReportRunners {
                                 item.melCategory(),
                                 item.title(),
                                 item.raisedAt().toLocalDate().toString(),
-                                item.dueAt() == null ? "per MEL remark" : item.dueAt().toLocalDate().toString(),
-                                nullSafe(item.daysRemaining()),
+                                item.dueAt() == null
+                                        ? "per MEL remark" : item.dueAt().toLocalDate().toString(),
+                                Rp.text(item.daysRemaining()),
                                 item.blocksDispatch() ? "yes" : "no",
                                 item.dueStatus()))
                         .toList();
+            }
+
+            @Override
+            public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
+                var open = melService.findOpen(tenantId);
+                long blocking = open.stream().filter(item -> item.blocksDispatch()).count();
+                return List.of(
+                        Rp.kpi("Deferrals in force", String.valueOf(open.size()),
+                                "open MEL and CDL items"),
+                        Rp.kpi("Blocking dispatch", String.valueOf(blocking),
+                                blocking == 0 ? "none" : "aircraft cannot be released",
+                                blocking == 0 ? "good" : "bad"),
+                        Rp.kpi("Aircraft affected",
+                                String.valueOf(open.stream().map(item -> item.registration())
+                                        .distinct().count()), "with an item in force"),
+                        Rp.kpi("Expiring", String.valueOf(open.stream()
+                                        .filter(item -> item.daysRemaining() != null
+                                                && item.daysRemaining() <= 3).count()),
+                                "three days or fewer to rectify", "warn"));
+            }
+
+            @Override
+            public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
+                var open = melService.findOpen(tenantId);
+                return List.of(
+                        Rp.donut("rpc1", "By MEL category", "half",
+                                Rp.tally(open, item -> item.melCategory())),
+                        Rp.bar("rpc2", "Items by aircraft", "half",
+                                Rp.tally(open, item -> item.registration()), Rp.AMBER));
             }
 
             @Override
@@ -177,12 +203,29 @@ public class DomainReportRunners {
         };
     }
 
+    /* ── permits outstanding ──────────────────────────────────────────────── */
+
     @Bean
     ReportRunner permitsReport(PermitService permitService) {
         return new ReportRunner() {
             @Override
             public String code() {
                 return "TS-PERMITS";
+            }
+
+            @Override
+            public String module() {
+                return "Trip support";
+            }
+
+            @Override
+            public String subtitle() {
+                return "Permit requests not confirmed, for legs departing inside the window";
+            }
+
+            @Override
+            public String scope() {
+                return "Period applied to the flight, not to the request date";
             }
 
             @Override
@@ -197,10 +240,37 @@ public class DomainReportRunners {
                                 permit.countryIso2(),
                                 permit.kind(),
                                 permit.status(),
-                                nullSafe(permit.recipient()),
-                                permit.sentAt() == null ? "not sent" : permit.sentAt().toLocalDate().toString(),
-                                nullSafe(permit.reference())))
+                                Rp.text(permit.recipient()),
+                                permit.sentAt() == null
+                                        ? "not sent" : permit.sentAt().toLocalDate().toString(),
+                                Rp.text(permit.reference())))
                         .toList();
+            }
+
+            @Override
+            public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
+                var permits = permitService.findOutstandingInWindow(tenantId, from, to);
+                long unsent = permits.stream().filter(permit -> permit.sentAt() == null).count();
+                return List.of(
+                        Rp.kpi("Outstanding", String.valueOf(permits.size()),
+                                "not confirmed", Rp.countTone(permits.size())),
+                        Rp.kpi("Not yet sent", String.valueOf(unsent),
+                                unsent == 0 ? "all requests issued" : "no request has gone out",
+                                unsent == 0 ? "good" : "bad"),
+                        Rp.kpi("Countries",
+                                String.valueOf(permits.stream()
+                                        .map(permit -> permit.countryIso2()).distinct().count()),
+                                "awaiting an answer"));
+            }
+
+            @Override
+            public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
+                var permits = permitService.findOutstandingInWindow(tenantId, from, to);
+                return List.of(
+                        Rp.bar("rpc1", "Outstanding by country", "half",
+                                Rp.tally(permits, permit -> permit.countryIso2()), Rp.NAVY2),
+                        Rp.donut("rpc2", "By kind", "half",
+                                Rp.tally(permits, permit -> permit.kind())));
             }
 
             @Override
@@ -211,45 +281,7 @@ public class DomainReportRunners {
         };
     }
 
-    @Bean
-    ReportRunner occurrencesReport(SafetyService safetyService) {
-        return new ReportRunner() {
-            @Override
-            public String code() {
-                return "SAF-OCC";
-            }
-
-            @Override
-            public List<String> columns() {
-                return List.of("Reference", "Occurred", "Category", "Title",
-                        "Risk", "Status", "Filed with authority");
-            }
-
-            @Override
-            public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                int window = (int) Math.max(1, ChronoUnit.DAYS.between(from, to));
-                return safetyService.findReporting(tenantId, window).occurrences().stream()
-                        .map(occurrence -> List.of(
-                                occurrence.reference(),
-                                occurrence.occurredAt().toLocalDate().toString(),
-                                occurrence.category(),
-                                occurrence.title(),
-                                occurrence.riskLevel() == null ? "not assessed" : occurrence.riskLevel(),
-                                occurrence.status(),
-                                occurrence.eccairsExportedAt() == null
-                                        ? "not filed"
-                                        : occurrence.eccairsReference()))
-                        .toList();
-            }
-
-            @Override
-            public String note() {
-                return "Anonymous reports appear without their reporter, by design. "
-                        + "\"Not assessed\" means no risk level has been recorded — it is not a "
-                        + "low risk.";
-            }
-        };
-    }
+    /* ── the commercial pipeline ──────────────────────────────────────────── */
 
     @Bean
     ReportRunner salesPipelineReport(SalesService salesService) {
@@ -260,6 +292,21 @@ public class DomainReportRunners {
             }
 
             @Override
+            public String module() {
+                return "Sales";
+            }
+
+            @Override
+            public String subtitle() {
+                return "Clients, quotes and feasibility requests";
+            }
+
+            @Override
+            public String scope() {
+                return "Period + fleet on quotes; the client directory narrows only through them";
+            }
+
+            @Override
             public List<String> columns() {
                 return List.of("Reference", "Client", "Route", "Departure",
                         "Feasibility", "Status", "Best quote", "Currency");
@@ -267,11 +314,7 @@ public class DomainReportRunners {
 
             @Override
             public List<List<String>> rows(UUID tenantId, LocalDate from, LocalDate to) {
-                return salesService.findBoard(tenantId, null).requests().stream()
-                        .filter(request -> {
-                            LocalDate day = request.departureAt().toLocalDate();
-                            return !day.isBefore(from) && !day.isAfter(to);
-                        })
+                return requests(salesService, tenantId, from, to).stream()
                         .map(request -> List.of(
                                 request.reference(),
                                 request.clientName(),
@@ -279,25 +322,65 @@ public class DomainReportRunners {
                                 request.departureAt().toLocalDate().toString(),
                                 request.feasibility(),
                                 request.status(),
-                                nullSafe(request.bestQuoteTotal()),
-                                nullSafe(request.bestQuoteCurrency())))
+                                Rp.text(request.bestQuoteTotal()),
+                                Rp.text(request.bestQuoteCurrency())))
                         .toList();
             }
 
             @Override
+            public List<ReportKpiDto> kpis(UUID tenantId, LocalDate from, LocalDate to) {
+                var requests = requests(salesService, tenantId, from, to);
+                var byStatus = Rp.tally(requests, request -> request.status());
+                long quoted = requests.stream()
+                        .filter(request -> request.bestQuoteTotal() != null).count();
+                long clients = requests.stream()
+                        .map(request -> request.clientName()).distinct().count();
+
+                return List.of(
+                        Rp.kpi("Requests", String.valueOf(requests.size()),
+                                "departing in the window"),
+                        Rp.kpi("Clients", String.valueOf(clients), "with an active request"),
+                        Rp.kpi("Quoted", String.valueOf(quoted),
+                                Rp.pct(quoted, requests.size()) + " % carry a price",
+                                "neutral", Rp.pct(quoted, requests.size())),
+                        Rp.kpi("Top status", byStatus.isEmpty() ? Rp.EMPTY : byStatus.get(0).key(),
+                                byStatus.isEmpty() ? "" : byStatus.get(0).count() + " requests",
+                                "warn"));
+            }
+
+            @Override
+            public List<ReportChartDto> charts(UUID tenantId, LocalDate from, LocalDate to) {
+                var requests = requests(salesService, tenantId, from, to);
+                return List.of(
+                        Rp.bar("rpc1", "Requests by status", "half",
+                                Rp.tally(requests, request -> request.status()), Rp.NAVY2),
+                        Rp.donut("rpc2", "Feasibility", "half",
+                                Rp.tally(requests, request -> request.feasibility())));
+            }
+
+            @Override
             public String note() {
-                return "Filtered on the departure date, not on the day the request arrived. "
-                        + "Each total is in the currency of its own quote: they are not added "
-                        + "together here.";
+                return "Filtered on the departure date, not on the day the request arrived: a "
+                        + "quote raised today for a flight next year belongs to next year. Each "
+                        + "total is in the currency of its own quote and they are not added "
+                        + "together here — a single figure across currencies would need a rate, "
+                        + "and the rate would be invented.";
             }
         };
     }
 
-    private static String hhmm(long minutes) {
-        return String.format("%d:%02d", minutes / 60, minutes % 60);
+    private static List<com.thenetworkplan.networkplan.sales.dto.SalesDtos.SalesRequestDto> requests(
+            SalesService salesService, UUID tenantId, LocalDate from, LocalDate to) {
+        return salesService.findBoard(tenantId, null).requests().stream()
+                .filter(request -> {
+                    LocalDate day = request.departureAt().toLocalDate();
+                    return !day.isBefore(from) && !day.isAfter(to);
+                })
+                .toList();
     }
 
-    private static String nullSafe(Object value) {
-        return value == null ? "—" : String.valueOf(value);
+    /** The due window, counted from today: a task due yesterday is still due. */
+    private static int horizon(LocalDate to) {
+        return (int) Math.max(1, ChronoUnit.DAYS.between(LocalDate.now(ZoneOffset.UTC), to));
     }
 }

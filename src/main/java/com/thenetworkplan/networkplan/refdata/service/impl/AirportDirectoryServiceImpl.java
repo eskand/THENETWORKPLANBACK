@@ -6,6 +6,7 @@ import com.thenetworkplan.networkplan.refdata.domain.Airport;
 import com.thenetworkplan.networkplan.refdata.domain.AirportNote;
 import com.thenetworkplan.networkplan.refdata.domain.Runway;
 import com.thenetworkplan.networkplan.refdata.dto.AirportDetailDto;
+import com.thenetworkplan.networkplan.refdata.dto.AirportDirectoryDto;
 import com.thenetworkplan.networkplan.refdata.dto.AirportFrequencyDto;
 import com.thenetworkplan.networkplan.refdata.dto.AirportServiceDto;
 import com.thenetworkplan.networkplan.refdata.dto.AirportNoteDto;
@@ -25,9 +26,12 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,6 +50,12 @@ import org.springframework.transaction.annotation.Transactional;
 public class AirportDirectoryServiceImpl implements AirportDirectoryService {
 
     private static final int USAGE_WINDOW_DAYS = 90;
+
+    /** What a directory rail shows before anyone scrolls. */
+    private static final int DEFAULT_LIMIT = 200;
+
+    /** The ceiling a caller cannot argue past, whatever it asks for. */
+    private static final int MAX_LIMIT = 1000;
 
     private final AirportRepository airportRepository;
     private final RunwayRepository runwayRepository;
@@ -74,17 +84,57 @@ public class AirportDirectoryServiceImpl implements AirportDirectoryService {
         this.mapper = mapper;
     }
 
+    /**
+     * Search the directory, bounded.
+     *
+     * <p><b>Nothing here reads the whole table.</b> The cap goes into SQL, and
+     * {@code usedOnly} is resolved before the select rather than after it: the
+     * stations an operator actually flies to are a couple of dozen ICAO codes,
+     * and asking the database for nine thousand rows in order to keep
+     * twenty-six of them is the shape of the bug this replaces.
+     */
     @Override
-    public List<AirportRowDto> search(UUID tenantId, String search, String country, boolean usedOnly) {
+    public AirportDirectoryDto search(UUID tenantId, String search, String country,
+                                      Short region, boolean usedOnly, int limit) {
         LocalDate today = LocalDate.now(ZoneOffset.UTC);
         String pattern = (search == null || search.isBlank())
                 ? null
                 : "%" + search.trim().toLowerCase() + "%";
         String iso = (country == null || country.isBlank()) ? null : country.trim().toUpperCase();
+        int rowCap = Math.max(1, Math.min(limit <= 0 ? DEFAULT_LIMIT : limit, MAX_LIMIT));
 
-        List<Airport> airports = airportRepository.search(pattern, iso);
+        Map<String, Map<String, Long>> usage = legService.countStationUsage(
+                tenantId, today.minusDays(USAGE_WINDOW_DAYS));
+        Map<String, Long> departures = usage.getOrDefault("DEP", Map.of());
+        Map<String, Long> arrivals = usage.getOrDefault("ARR", Map.of());
+
+        List<Airport> airports;
+        long matched;
+        if (usedOnly) {
+            /* « Seulement les escales ou l on va » se resout avant le select :
+               ops.legs connait la liste, elle tient en quelques dizaines de
+               codes, et une requete par identifiant vaut mieux qu un scan. */
+            Set<String> stations = new LinkedHashSet<>(departures.keySet());
+            stations.addAll(arrivals.keySet());
+            if (stations.isEmpty()) {
+                return AirportDirectoryDto.empty();
+            }
+            airports = airportRepository.findByIcaoIn(stations).stream()
+                    .filter(airport -> matches(airport, pattern, iso, region))
+                    .sorted(Comparator.comparing(Airport::getIcao))
+                    .toList();
+            matched = airports.size();
+            if (airports.size() > rowCap) {
+                airports = airports.subList(0, rowCap);
+            }
+        } else {
+            matched = airportRepository.countMatching(pattern, iso, region);
+            airports = airportRepository.search(pattern, iso, region,
+                    PageRequest.of(0, rowCap));
+        }
+
         if (airports.isEmpty()) {
-            return List.of();
+            return new AirportDirectoryDto(List.of(), matched, false);
         }
         List<UUID> ids = airports.stream().map(Airport::getId).toList();
 
@@ -111,18 +161,10 @@ public class AirportDirectoryServiceImpl implements AirportDirectoryService {
             suppliersByStation.merge(supplier.stationIcao(), 1, Integer::sum);
         }
 
-        Map<String, Map<String, Long>> usage = legService.countStationUsage(
-                tenantId, today.minusDays(USAGE_WINDOW_DAYS));
-        Map<String, Long> departures = usage.getOrDefault("DEP", Map.of());
-        Map<String, Long> arrivals = usage.getOrDefault("ARR", Map.of());
-
         List<AirportRowDto> rows = new ArrayList<>(airports.size());
         for (Airport airport : airports) {
             long legs = departures.getOrDefault(airport.getIcao(), 0L)
                     + arrivals.getOrDefault(airport.getIcao(), 0L);
-            if (usedOnly && legs == 0) {
-                continue;
-            }
             rows.add(new AirportRowDto(
                     mapper.toDto(airport),
                     runwayCount.getOrDefault(airport.getId(), 0),
@@ -137,7 +179,29 @@ public class AirportDirectoryServiceImpl implements AirportDirectoryService {
         // fact from ops.legs, not a favourite someone maintains by hand.
         rows.sort(Comparator.comparingLong(AirportRowDto::legsLast90Days).reversed()
                 .thenComparing(row -> row.airport().icao()));
-        return rows;
+        return new AirportDirectoryDto(rows, matched, matched > rows.size());
+    }
+
+    /** The same predicate as the SQL, for the branch that reads by ICAO. */
+    private static boolean matches(Airport airport, String pattern, String iso, Short region) {
+        if (iso != null && !iso.equals(airport.getCountryIso2())) {
+            return false;
+        }
+        if (region != null && !region.equals(airport.getRegion())) {
+            return false;
+        }
+        if (pattern == null) {
+            return true;
+        }
+        String needle = pattern.substring(1, pattern.length() - 1);
+        return contains(airport.getIcao(), needle)
+                || contains(airport.getIata(), needle)
+                || contains(airport.getName(), needle)
+                || contains(airport.getCity(), needle);
+    }
+
+    private static boolean contains(String value, String needle) {
+        return value != null && value.toLowerCase().contains(needle);
     }
 
     @Override

@@ -24,6 +24,8 @@ public final class ReportDtos {
             String subtitle,
             /** How the fleet and period filters apply to this report. */
             String scope,
+            /** Where it sits in the left menu, low first. */
+            int menuOrder,
             /** False when no runner answers this code: the screen says so rather than
              *  showing an empty table. */
             boolean runnable,

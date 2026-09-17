@@ -33,6 +33,10 @@ public record LegDto(
         OffsetDateTime ctot,
         String status,
         String flightType,
+        /** SCHEDULED / NON_SCHEDULED / PRIVATE / STATE. */
+        String commercialType,
+        /** La lettre de la case 8 du plan de vol OACI, derivee des deux ci-dessus. */
+        String flightPlanLetter,
         int paxCount,
         String riskLevel,
         OffsetDateTime mvtSentAt,

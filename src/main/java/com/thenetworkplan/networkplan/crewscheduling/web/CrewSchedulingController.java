@@ -3,6 +3,7 @@ package com.thenetworkplan.networkplan.crewscheduling.web;
 import com.thenetworkplan.networkplan.common.tenant.TenantContext;
 import com.thenetworkplan.networkplan.crew.dto.CrewMemberDto;
 import com.thenetworkplan.networkplan.crewscheduling.dto.AssignSeatCommand;
+import com.thenetworkplan.networkplan.crewscheduling.dto.RecordCheckTimesCommand;
 import com.thenetworkplan.networkplan.crewscheduling.dto.SchedulingBoardDto;
 import com.thenetworkplan.networkplan.crewscheduling.service.CrewSchedulingService;
 import jakarta.validation.Valid;
@@ -14,6 +15,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -54,5 +56,12 @@ public class CrewSchedulingController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void unassign(@PathVariable UUID id) {
         crewSchedulingService.unassign(TenantContext.require(), id);
+    }
+
+    /** Les heures de prise et de fin de service — onglet CREW du dossier de vol. */
+    @PatchMapping("/assignments/{assignmentId}/check-times")
+    public CrewMemberDto recordCheckTimes(@PathVariable UUID assignmentId,
+                                          @Valid @RequestBody RecordCheckTimesCommand command) {
+        return crewSchedulingService.recordCheckTimes(TenantContext.require(), assignmentId, command);
     }
 }

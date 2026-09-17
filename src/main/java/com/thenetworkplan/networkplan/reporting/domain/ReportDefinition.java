@@ -43,4 +43,14 @@ public class ReportDefinition extends BaseEntity {
 
     @Column(name = "default_window_days", nullable = false)
     private int defaultWindowDays = 30;
+
+    /**
+     * Where the report sits in the left menu.
+     *
+     * <p>Neither alphabetical nor chronological: the order in which an operator
+     * asks the questions. Sorting by code would open the screen on
+     * « Cancelled Flights », which is the one question nobody asks on arrival.
+     */
+    @Column(name = "menu_order", nullable = false)
+    private int menuOrder = 900;
 }

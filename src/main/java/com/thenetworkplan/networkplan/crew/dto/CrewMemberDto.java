@@ -20,5 +20,6 @@ public record CrewMemberDto(
         String documentStatus,
         OffsetDateTime dutyStart,
         OffsetDateTime dutyEnd,
-        OffsetDateTime checkedInAt) implements Serializable {
+        OffsetDateTime checkedInAt,
+        OffsetDateTime checkedOutAt) implements Serializable {
 }

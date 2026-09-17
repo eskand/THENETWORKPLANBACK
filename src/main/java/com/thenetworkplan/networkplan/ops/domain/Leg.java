@@ -11,6 +11,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
+import java.util.UUID;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -91,6 +92,16 @@ public class Leg extends BaseEntity {
     @Column(name = "flight_type", nullable = false)
     private FlightType flightType = FlightType.PAX;
 
+    /**
+     * La nature COMMERCIALE de l'etape — programme, hors programme, prive,
+     * vol d'Etat. Distincte de {@link #flightType}, qui dit ce que l'etape
+     * transporte : c'est cet axe-ci qui decide de la lettre de la case 8 du
+     * plan de vol.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "commercial_type", nullable = false)
+    private CommercialType commercialType = CommercialType.NON_SCHEDULED;
+
     @Column(name = "pax_count", nullable = false)
     private int paxCount;
 
@@ -103,6 +114,23 @@ public class Leg extends BaseEntity {
 
     @Column(name = "remark")
     private String remark;
+
+    /**
+     * La note d'exploitation de l'etape — menu du dossier de vol.
+     *
+     * <p>Distincte de {@link #remark}, qui est la remarque du dossier
+     * documentaire : l'annexe tient les deux separement ({@code _note} et
+     * {@code _tripRemarks}), parce que la premiere se lit avant le depart et la
+     * seconde s'ecrit apres.
+     */
+    @Column(name = "flight_note")
+    private String flightNote;
+
+    @Column(name = "flight_note_at", columnDefinition = "timestamptz")
+    private OffsetDateTime flightNoteAt;
+
+    @Column(name = "flight_note_by")
+    private UUID flightNoteBy;
 
     @Column(name = "business_key", nullable = false, updatable = false)
     private String businessKey;
