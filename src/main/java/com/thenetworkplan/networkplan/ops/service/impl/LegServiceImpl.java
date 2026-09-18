@@ -21,6 +21,7 @@ import com.thenetworkplan.networkplan.ops.dto.CreateLegCommand;
 import com.thenetworkplan.networkplan.ops.dto.LegDelayDto;
 import com.thenetworkplan.networkplan.ops.dto.LegDto;
 import com.thenetworkplan.networkplan.ops.dto.MoveLegCommand;
+import com.thenetworkplan.networkplan.ops.dto.SetSlotCommand;
 import com.thenetworkplan.networkplan.ops.dto.StationCount;
 import com.thenetworkplan.networkplan.ops.mapper.LegMapper;
 import com.thenetworkplan.networkplan.ops.repository.DelayCodeRepository;
@@ -261,6 +262,57 @@ public class LegServiceImpl implements LegService {
         Leg saved = legRepository.save(leg);
         eventRecorder.record(tenantId, legId, LegEventKind.CANCELLED, before, snapshot(saved),
                 actorId, command.reason());
+        return mapper.toDto(saved);
+    }
+
+    @Override
+    @Transactional
+    @CacheEvict(cacheNames = CacheNames.DISPATCH_BOARD, allEntries = true)
+    public LegDto setSlot(UUID tenantId, UUID legId, SetSlotCommand command, UUID actorId) {
+        Leg leg = requireLeg(tenantId, legId);
+        if (leg.getStatus().isAirborneOrLater()) {
+            throw new BusinessRuleException("LEG_ALREADY_DEPARTED",
+                    "A leg that is off blocks no longer holds a departure slot");
+        }
+        if (leg.getStatus() == LegStatus.CANCELLED) {
+            throw new BusinessRuleException("LEG_CANCELLED",
+                    "A cancelled leg cannot be given a slot");
+        }
+
+        Map<String, Object> before = snapshot(leg);
+        OffsetDateTime previousDeparture = leg.effectiveDeparture();
+        String reference = command.reference() == null || command.reference().isBlank()
+                ? null : command.reference().trim();
+
+        leg.setCtot(command.ctot());
+        leg.setCtotRef(reference);
+
+        // Le creneau ne deplace l'estimation que lorsqu'il la repousse : un CTOT
+        // plus tot que l'ETD courant ne fait pas partir plus tot, il laisse
+        // simplement de la marge. L'horaire publie (STD/STA) ne bouge jamais —
+        // c'est contre lui que la ponctualite se mesure.
+        long push = Duration.between(previousDeparture, command.ctot()).toMinutes();
+        if (push > 0) {
+            leg.setEtd(command.ctot());
+            leg.setEta(leg.effectiveArrival().plusMinutes(push));
+        }
+        Leg saved = legRepository.save(leg);
+
+        String reason = "ATC slot — CTOT "
+                + command.ctot().atZoneSameInstant(ZoneOffset.UTC).toLocalTime()
+                        .withSecond(0).withNano(0)
+                + "Z" + (reference == null ? "" : " (ref " + reference + ")");
+        eventRecorder.record(tenantId, legId,
+                push > 0 ? LegEventKind.DELAYED : LegEventKind.REMARK,
+                before, snapshot(saved), actorId, reason);
+
+        if (push > 0) {
+            // 81 — ATFM due to ATC en-route demand/capacity. Un creneau qui
+            // repousse le depart EST un retard reglementaire : le coder autrement
+            // sortirait la cause du releve de ponctualite.
+            recordDelay(tenantId, legId, (int) push, "81", reason);
+            cascade(tenantId, saved, actorId);
+        }
         return mapper.toDto(saved);
     }
 

@@ -84,6 +84,16 @@ public class Leg extends BaseEntity {
     @Column(name = "ctot", columnDefinition = "timestamptz")
     private OffsetDateTime ctot;
 
+    /**
+     * La reference sous laquelle le creneau a ete delivre.
+     *
+     * <p>Un CTOT sans reference n'est pas verifiable : c'est elle qu'on cite
+     * pour faire revoir un creneau, et c'est elle qui distingue un creneau recu
+     * d'une heure saisie a la main.
+     */
+    @Column(name = "ctot_ref")
+    private String ctotRef;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
     private LegStatus status = LegStatus.PLANNED;

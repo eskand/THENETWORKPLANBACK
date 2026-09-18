@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -36,6 +37,26 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleIllegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
         return ResponseEntity.badRequest()
                 .body(ApiError.of(400, "Bad Request", ex.getMessage(), request.getRequestURI()));
+    }
+
+    /**
+     * Un corps de requete illisible est une erreur du CLIENT, pas du serveur.
+     *
+     * <p>Sans ce cas, du JSON tronque ou mal encode tombait dans le fourre-tout
+     * et rendait 500 : l'appelant lisait « erreur interne » alors que rien
+     * n'avait echoue cote serveur, et la trace partait dans les logs comme un
+     * incident. Le message de Jackson est repris tel quel — il nomme l'octet ou
+     * le champ fautif, qui est exactement ce qu'il faut pour corriger l'appel.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiError> handleUnreadableBody(HttpMessageNotReadableException ex,
+                                                         HttpServletRequest request) {
+        String detail = ex.getMostSpecificCause().getMessage();
+        return ResponseEntity.badRequest()
+                .body(ApiError.of(400, "Bad Request",
+                        "Request body could not be read: "
+                                + (detail == null ? "malformed JSON" : detail),
+                        request.getRequestURI()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

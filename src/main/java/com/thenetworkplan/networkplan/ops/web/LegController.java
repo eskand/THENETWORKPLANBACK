@@ -6,11 +6,14 @@ import com.thenetworkplan.networkplan.ops.dto.ChangeAircraftCommand;
 import com.thenetworkplan.networkplan.ops.dto.CreateLegCommand;
 import com.thenetworkplan.networkplan.ops.dto.LegDto;
 import com.thenetworkplan.networkplan.ops.dto.MoveLegCommand;
+import com.thenetworkplan.networkplan.ops.dto.OccTimelineDto;
 import com.thenetworkplan.networkplan.ops.dto.ReadinessDto;
 import com.thenetworkplan.networkplan.ops.dto.RecordMovementCommand;
+import com.thenetworkplan.networkplan.ops.dto.SetSlotCommand;
 import com.thenetworkplan.networkplan.ops.service.LegMovementService;
 import com.thenetworkplan.networkplan.ops.service.LegReadinessService;
 import com.thenetworkplan.networkplan.ops.service.LegService;
+import com.thenetworkplan.networkplan.ops.service.OccTimelineService;
 import jakarta.validation.Valid;
 import java.time.LocalDate;
 import java.util.List;
@@ -43,13 +46,16 @@ public class LegController {
     private final LegService legService;
     private final LegReadinessService readinessService;
     private final LegMovementService movementService;
+    private final OccTimelineService occTimelineService;
 
     public LegController(LegService legService,
                          LegReadinessService readinessService,
-                         LegMovementService movementService) {
+                         LegMovementService movementService,
+                         OccTimelineService occTimelineService) {
         this.legService = legService;
         this.readinessService = readinessService;
         this.movementService = movementService;
+        this.occTimelineService = occTimelineService;
     }
 
     @GetMapping
@@ -68,6 +74,12 @@ public class LegController {
     @GetMapping("/{id}/readiness")
     public ReadinessDto readiness(@PathVariable UUID id) {
         return readinessService.assess(TenantContext.require(), id);
+    }
+
+    /** La frise « OCC Dispatch » du menu du dossier de vol. */
+    @GetMapping("/{id}/occ-timeline")
+    public OccTimelineDto occTimeline(@PathVariable UUID id) {
+        return occTimelineService.timeline(TenantContext.require(), id);
     }
 
     @PostMapping
@@ -89,6 +101,19 @@ public class LegController {
                                  @Valid @RequestBody ChangeAircraftCommand command,
                                  @RequestHeader(name = "X-Actor-Id", required = false) UUID actorId) {
         return legService.changeAircraft(TenantContext.require(), id, command, actorId);
+    }
+
+    /**
+     * Le creneau ATC — le bouton « Set CTOT / Slot ref » de la frise OCC.
+     *
+     * <p>{@code PATCH} et non {@code POST} : le creneau est un champ de l'etape,
+     * pas un evenement qu'on empile. Le reposer le remplace.
+     */
+    @PatchMapping("/{id}/slot")
+    public LegDto setSlot(@PathVariable UUID id,
+                          @Valid @RequestBody SetSlotCommand command,
+                          @RequestHeader(name = "X-Actor-Id", required = false) UUID actorId) {
+        return legService.setSlot(TenantContext.require(), id, command, actorId);
     }
 
     @PatchMapping("/{id}/cancel")

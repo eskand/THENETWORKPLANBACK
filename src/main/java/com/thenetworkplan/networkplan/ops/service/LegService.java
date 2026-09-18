@@ -6,6 +6,7 @@ import com.thenetworkplan.networkplan.ops.dto.CreateLegCommand;
 import com.thenetworkplan.networkplan.ops.dto.LegDelayDto;
 import com.thenetworkplan.networkplan.ops.dto.LegDto;
 import com.thenetworkplan.networkplan.ops.dto.MoveLegCommand;
+import com.thenetworkplan.networkplan.ops.dto.SetSlotCommand;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -56,4 +57,17 @@ public interface LegService {
     LegDto changeAircraft(UUID tenantId, UUID legId, ChangeAircraftCommand command, UUID actorId);
 
     LegDto cancel(UUID tenantId, UUID legId, CancelLegCommand command, UUID actorId);
+
+    /**
+     * Enregistre le creneau ATC recu pour l'etape — {@code occSetSlot()} de
+     * l'annexe (prototype l. 14073).
+     *
+     * <p>Un CTOT ne deplace PAS l'horaire : il deplace l'estimation. La STD
+     * publiee reste ce qu'elle etait — c'est elle contre laquelle la ponctualite
+     * se mesure — et seul l'ETD suit le creneau. Quand le creneau passe apres le
+     * depart estime, l'ecart est enregistre comme un retard code 81 (ATFM) et se
+     * propage a la rotation suivante par le meme chemin que tous les autres
+     * retards.
+     */
+    LegDto setSlot(UUID tenantId, UUID legId, SetSlotCommand command, UUID actorId);
 }

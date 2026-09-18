@@ -126,4 +126,29 @@ public interface LegRepository extends JpaRepository<Leg, UUID> {
     List<Leg> findNextRotations(@Param("tenantId") UUID tenantId,
                                 @Param("aircraftId") UUID aircraftId,
                                 @Param("after") OffsetDateTime after);
+
+    /**
+     * Toutes les etapes d'un appareil dans une fenetre, dans l'ordre.
+     *
+     * <p>La frise OCC a besoin des DEUX voisines — celle d'avant pour le temps
+     * d'escale, celle d'apres pour le risque de rotation — et
+     * {@link #findNextRotations} ne donne que la suite, en excluant de surcroit
+     * les etapes deja parties. Une etape annulee est gardee ici : elle ne cree
+     * plus d'escale, et la frise doit pouvoir le dire plutot que de sauter
+     * silencieusement a la suivante.
+     */
+    @Query("""
+            select l from Leg l
+            join fetch l.aircraft a
+            join fetch a.aircraftType t
+            where l.tenantId = :tenantId
+              and a.id = :aircraftId
+              and l.std >= :from
+              and l.std < :to
+            order by l.std asc
+            """)
+    List<Leg> findRotation(@Param("tenantId") UUID tenantId,
+                           @Param("aircraftId") UUID aircraftId,
+                           @Param("from") OffsetDateTime from,
+                           @Param("to") OffsetDateTime to);
 }
