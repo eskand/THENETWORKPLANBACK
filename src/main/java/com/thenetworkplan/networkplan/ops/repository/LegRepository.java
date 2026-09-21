@@ -107,6 +107,15 @@ public interface LegRepository extends JpaRepository<Leg, UUID> {
 
     boolean existsByBusinessKey(String businessKey);
 
+    /** Les tenants qui ont un depart programme dans la fenetre — pour les balayages planifies. */
+    @Query("""
+            select distinct l.tenantId from Leg l
+            where l.std >= :from
+              and l.std < :to
+            """)
+    List<UUID> findTenantsWithDepartures(@Param("from") OffsetDateTime from,
+                                         @Param("to") OffsetDateTime to);
+
     /**
      * Next rotation of the same tail, used by the delay cascade: a delay pushes
      * the following leg only when the turnaround falls under the tenant minimum.
