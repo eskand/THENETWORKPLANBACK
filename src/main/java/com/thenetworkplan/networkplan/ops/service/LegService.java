@@ -3,6 +3,7 @@ package com.thenetworkplan.networkplan.ops.service;
 import com.thenetworkplan.networkplan.ops.dto.CancelLegCommand;
 import com.thenetworkplan.networkplan.ops.dto.ChangeAircraftCommand;
 import com.thenetworkplan.networkplan.ops.dto.CreateLegCommand;
+import com.thenetworkplan.networkplan.ops.dto.DelayCodeDto;
 import com.thenetworkplan.networkplan.ops.dto.LegDelayDto;
 import com.thenetworkplan.networkplan.ops.dto.LegDto;
 import com.thenetworkplan.networkplan.ops.dto.MoveLegCommand;
@@ -47,6 +48,14 @@ public interface LegService {
 
     /** Delay minutes and occurrences per IATA code over a window. */
     Map<String, long[]> countDelaysByCode(UUID tenantId, LocalDate from, LocalDate to);
+
+    /**
+     * Les codes de retard actifs du tenant, dans l'ordre des codes.
+     *
+     * <p>Le mouvement OUT accepte un retard code depuis toujours ; sans cette
+     * liste a l'ecran, la cause tombait sur le code par defaut, en silence.
+     */
+    List<DelayCodeDto> delayCodes(UUID tenantId);
 
     LegDto findById(UUID tenantId, UUID legId);
 

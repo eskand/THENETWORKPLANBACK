@@ -4,6 +4,7 @@ import com.thenetworkplan.networkplan.common.tenant.TenantContext;
 import com.thenetworkplan.networkplan.ops.dto.CancelLegCommand;
 import com.thenetworkplan.networkplan.ops.dto.ChangeAircraftCommand;
 import com.thenetworkplan.networkplan.ops.dto.CreateLegCommand;
+import com.thenetworkplan.networkplan.ops.dto.DelayCodeDto;
 import com.thenetworkplan.networkplan.ops.dto.LegDto;
 import com.thenetworkplan.networkplan.ops.dto.MoveLegCommand;
 import com.thenetworkplan.networkplan.ops.dto.OccTimelineDto;
@@ -64,6 +65,12 @@ public class LegController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         return legService.findProgramme(TenantContext.require(),
                 date != null ? date : LocalDate.now());
+    }
+
+    /** La liste des codes de retard du tenant, pour le choix de la cause a la saisie de l'ATD. */
+    @GetMapping("/delay-codes")
+    public List<DelayCodeDto> delayCodes() {
+        return legService.delayCodes(TenantContext.require());
     }
 
     @GetMapping("/{id}")

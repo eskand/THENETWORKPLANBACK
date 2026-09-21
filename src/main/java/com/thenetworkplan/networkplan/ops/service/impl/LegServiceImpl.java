@@ -18,6 +18,7 @@ import com.thenetworkplan.networkplan.ops.domain.LegStatus;
 import com.thenetworkplan.networkplan.ops.dto.CancelLegCommand;
 import com.thenetworkplan.networkplan.ops.dto.ChangeAircraftCommand;
 import com.thenetworkplan.networkplan.ops.dto.CreateLegCommand;
+import com.thenetworkplan.networkplan.ops.dto.DelayCodeDto;
 import com.thenetworkplan.networkplan.ops.dto.LegDelayDto;
 import com.thenetworkplan.networkplan.ops.dto.LegDto;
 import com.thenetworkplan.networkplan.ops.dto.MoveLegCommand;
@@ -77,6 +78,14 @@ public class LegServiceImpl implements LegService {
         this.eventRecorder = eventRecorder;
         this.mapper = mapper;
         this.opsProperties = opsProperties;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<DelayCodeDto> delayCodes(UUID tenantId) {
+        return delayCodeRepository.findByTenantIdAndActiveTrueOrderByCodeAsc(tenantId).stream()
+                .map(code -> new DelayCodeDto(code.getCode(), code.getLabel()))
+                .toList();
     }
 
     @Override
