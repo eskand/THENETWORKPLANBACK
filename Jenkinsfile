@@ -139,10 +139,15 @@ pipeline {
         stage('Analyse SonarQube') {
             steps {
                 script {
-                    // withSonarQubeEnv fournit SONAR_HOST_URL et le jeton au plugin Maven ;
+                    // withSonarQubeEnv fournit SONAR_HOST_URL et SONAR_AUTH_TOKEN ;
                     // projectKey, exclusions et chemin JaCoCo sont dans le pom.
+                    // Le jeton est passé explicitement en sonar.token : SonarQube
+                    // 2025.1+ n'accepte plus le sonar.login que le plugin injecte, et
+                    // sans cela le scanner part anonyme (HTTP 401). Simples quotes :
+                    // c'est le shell qui lit la variable, le secret ne passe pas par Groovy.
                     withSonarQubeEnv('sonarqube') {
-                        mvn "sonar:sonar -Dsonar.projectVersion=${env.SHORT_SHA}"
+                        mvn((isUnix() ? 'sonar:sonar -Dsonar.token=$SONAR_AUTH_TOKEN' : 'sonar:sonar -Dsonar.token=%SONAR_AUTH_TOKEN%')
+                            + ' -Dsonar.projectVersion=' + env.SHORT_SHA)
                     }
                 }
             }
