@@ -1,0 +1,4 @@
+# Seul target/*.jar entre dans l'image (voir Dockerfile).
+*
+!target/*.jar
+target/*.jar.original

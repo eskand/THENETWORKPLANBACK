@@ -16,6 +16,12 @@
 
 	<properties>
 		<java.version>21</java.version>
+		<!-- Analyse SonarQube (voir Jenkinsfile, étape « Analyse SonarQube »).
+		     L'URL et le jeton viennent de Jenkins (withSonarQubeEnv), pas d'ici. -->
+		<sonar.projectKey>netplus-back</sonar.projectKey>
+		<sonar.projectName>NetPlus — API</sonar.projectName>
+		<sonar.coverage.jacoco.xmlReportPaths>${project.build.directory}/site/jacoco/jacoco.xml</sonar.coverage.jacoco.xmlReportPaths>
+		<sonar.exclusions>**/config/**,**/*Application.java</sonar.exclusions>
 	</properties>
 
 	<dependencies>
@@ -135,6 +141,36 @@
 						</path>
 					</annotationProcessorPaths>
 				</configuration>
+			</plugin>
+			<!--
+				Couverture de tests pour SonarQube : l'agent est posé avant les tests,
+				le rapport XML (target/site/jacoco/jacoco.xml) est produit à « verify »
+				et lu par sonar:sonar via sonar.coverage.jacoco.xmlReportPaths.
+			-->
+			<plugin>
+				<groupId>org.jacoco</groupId>
+				<artifactId>jacoco-maven-plugin</artifactId>
+				<version>0.8.13</version>
+				<executions>
+					<execution>
+						<id>prepare-agent</id>
+						<goals>
+							<goal>prepare-agent</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>report</id>
+						<phase>verify</phase>
+						<goals>
+							<goal>report</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
+				<groupId>org.sonarsource.scanner.maven</groupId>
+				<artifactId>sonar-maven-plugin</artifactId>
+				<version>5.1.0.4751</version>
 			</plugin>
 		</plugins>
 	</build>
