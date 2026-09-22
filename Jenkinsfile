@@ -29,7 +29,8 @@
 //    CI_DEPLOY     « true » pour déployer main sur le cluster
 //
 //  Il tourne sur un agent Linux ou Windows : chaque commande passe par
-//  `run`, qui choisit `sh` ou `bat`.
+//  `run`, qui choisit `sh` ou `bat`. Ces fonctions ne sont pas des étapes
+//  déclaratives, d'où les blocs script { } qui les entourent.
 //
 //  Si Jenkins tourne lui-même dans un conteneur (jenkins/docker-compose.yml
 //  du dépôt parent), le PostgreSQL jetable est un conteneur voisin : il
@@ -84,8 +85,8 @@ pipeline {
                     // Étiquettes de l'image : le commit court et la branche.
                     env.SHORT_SHA  = (env.GIT_COMMIT ?: runOut('git rev-parse HEAD')).take(7)
                     env.BRANCH_TAG = dockerTag(env.BRANCH_NAME ?: 'local')
+                    mvn 'clean test-compile'
                 }
-                mvn 'clean test-compile'
             }
         }
 
@@ -123,8 +124,10 @@ pipeline {
 
         stage('Tests') {
             steps {
-                // verify = tests (agent JaCoCo posé) + rapport jacoco.xml + package.
-                mvn 'verify'
+                script {
+                    // verify = tests (agent JaCoCo posé) + rapport jacoco.xml + package.
+                    mvn 'verify'
+                }
             }
             post {
                 always {
@@ -135,10 +138,12 @@ pipeline {
 
         stage('Analyse SonarQube') {
             steps {
-                // withSonarQubeEnv fournit SONAR_HOST_URL et le jeton au plugin Maven ;
-                // projectKey, exclusions et chemin JaCoCo sont dans le pom.
-                withSonarQubeEnv('sonarqube') {
-                    mvn "sonar:sonar -Dsonar.projectVersion=${env.SHORT_SHA}"
+                script {
+                    // withSonarQubeEnv fournit SONAR_HOST_URL et le jeton au plugin Maven ;
+                    // projectKey, exclusions et chemin JaCoCo sont dans le pom.
+                    withSonarQubeEnv('sonarqube') {
+                        mvn "sonar:sonar -Dsonar.projectVersion=${env.SHORT_SHA}"
+                    }
                 }
             }
         }
@@ -154,7 +159,9 @@ pipeline {
 
         stage('Image Docker') {
             steps {
-                run "docker build --pull -t ${env.IMAGE}:${env.SHORT_SHA} -t ${env.IMAGE}:${env.BRANCH_TAG} ."
+                script {
+                    run "docker build --pull -t ${env.IMAGE}:${env.SHORT_SHA} -t ${env.IMAGE}:${env.BRANCH_TAG} ."
+                }
                 archiveArtifacts artifacts: 'target/*.jar', excludes: 'target/*.jar.original', fingerprint: true
             }
         }
@@ -162,16 +169,18 @@ pipeline {
         stage('Publication') {
             when { branch 'main' }
             steps {
-                withCredentials([usernamePassword(credentialsId: 'registry-credentials',
-                                                  usernameVariable: 'REG_USER',
-                                                  passwordVariable: 'REG_PASS')]) {
-                    // Chaînes en simples quotes : c'est le shell qui lit le secret, pas Groovy.
-                    run(isUnix()
-                        ? 'echo "$REG_PASS" | docker login -u "$REG_USER" --password-stdin ' + env.REGISTRY
-                        : 'echo %REG_PASS%| docker login -u %REG_USER% --password-stdin ' + env.REGISTRY)
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'registry-credentials',
+                                                      usernameVariable: 'REG_USER',
+                                                      passwordVariable: 'REG_PASS')]) {
+                        // Chaînes en simples quotes : c'est le shell qui lit le secret, pas Groovy.
+                        run(isUnix()
+                            ? 'echo "$REG_PASS" | docker login -u "$REG_USER" --password-stdin ' + env.REGISTRY
+                            : 'echo %REG_PASS%| docker login -u %REG_USER% --password-stdin ' + env.REGISTRY)
+                    }
+                    run "docker push ${env.IMAGE}:${env.SHORT_SHA}"
+                    run "docker push ${env.IMAGE}:${env.BRANCH_TAG}"
                 }
-                run "docker push ${env.IMAGE}:${env.SHORT_SHA}"
-                run "docker push ${env.IMAGE}:${env.BRANCH_TAG}"
             }
         }
 
@@ -183,11 +192,13 @@ pipeline {
                 }
             }
             steps {
-                // Les manifestes (k8s/ du dépôt parent) sont appliqués à part ;
-                // le pipeline ne fait que faire tourner l'image du Deployment.
-                withKubeConfig([credentialsId: 'kubeconfig-netplus']) {
-                    run "kubectl -n ${env.K8S_NS} set image deployment/${env.K8S_DEPLOY} ${env.K8S_DEPLOY}=${env.IMAGE}:${env.SHORT_SHA}"
-                    run "kubectl -n ${env.K8S_NS} rollout status deployment/${env.K8S_DEPLOY} --timeout=5m"
+                script {
+                    // Les manifestes (k8s/ du dépôt parent) sont appliqués à part ;
+                    // le pipeline ne fait que faire tourner l'image du Deployment.
+                    withKubeConfig([credentialsId: 'kubeconfig-netplus']) {
+                        run "kubectl -n ${env.K8S_NS} set image deployment/${env.K8S_DEPLOY} ${env.K8S_DEPLOY}=${env.IMAGE}:${env.SHORT_SHA}"
+                        run "kubectl -n ${env.K8S_NS} rollout status deployment/${env.K8S_DEPLOY} --timeout=5m"
+                    }
                 }
             }
         }
