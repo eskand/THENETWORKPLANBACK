@@ -165,7 +165,12 @@ pipeline {
         stage('Image Docker') {
             steps {
                 script {
-                    run "docker build --pull -t ${env.IMAGE}:${env.SHORT_SHA} -t ${env.IMAGE}:${env.BRANCH_TAG} ."
+                    // Sans --pull : l'image de base est réutilisée si elle est déjà là,
+                    // un « context deadline exceeded » vers Docker Hub ne casse pas le
+                    // build. retry : un aléa réseau sur le premier téléchargement non plus.
+                    retry(2) {
+                        run "docker build -t ${env.IMAGE}:${env.SHORT_SHA} -t ${env.IMAGE}:${env.BRANCH_TAG} ."
+                    }
                 }
                 archiveArtifacts artifacts: 'target/*.jar', excludes: 'target/*.jar.original', fingerprint: true
             }
