@@ -29,9 +29,12 @@ FROM eclipse-temurin:21-jre-alpine
 LABEL org.opencontainers.image.title="netplus-back" \
       org.opencontainers.image.source="https://github.com/eskand/THENETWORKPLANBACK"
 
-# Utilisateur non root : la NetworkPolicy et le SecurityContext du pod
-# comptent dessus (runAsNonRoot).
-RUN addgroup -S netplus && adduser -S -G netplus -h /app netplus
+# Utilisateur non root, avec un uid/gid FIXE et NUMÉRIQUE (10001) : le pod
+# Kubernetes tourne en runAsNonRoot, et kubelet refuse de démarrer un
+# conteneur dont l'image déclare son utilisateur par un nom seulement
+# (« image has non-numeric user, cannot verify user is non-root »).
+# k8s/base/back.yaml pose le même 10001 en runAsUser.
+RUN addgroup -S -g 10001 netplus && adduser -S -u 10001 -G netplus -h /app netplus
 WORKDIR /app
 
 COPY --from=layers --chown=netplus:netplus /build/extracted/dependencies/ ./
@@ -39,7 +42,7 @@ COPY --from=layers --chown=netplus:netplus /build/extracted/spring-boot-loader/ 
 COPY --from=layers --chown=netplus:netplus /build/extracted/snapshot-dependencies/ ./
 COPY --from=layers --chown=netplus:netplus /build/extracted/application/ ./
 
-USER netplus
+USER 10001:10001
 EXPOSE 8080
 
 # Le conteneur n'a que la mémoire de son cgroup : la JVM s'y adapte.
