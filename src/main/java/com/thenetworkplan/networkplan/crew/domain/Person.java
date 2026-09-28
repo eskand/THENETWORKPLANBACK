@@ -45,6 +45,22 @@ public class Person extends BaseEntity {
     @Column(name = "active", nullable = false)
     private boolean active = true;
 
+    /** Rang d'ancienneté (« #85 » dans Crew Management) ; null tant qu'il n'est pas tenu. */
+    @Column(name = "seniority_rank")
+    private Integer seniorityRank;
+
+    @Column(name = "hire_date")
+    private LocalDate hireDate;
+
+    @Column(name = "phone")
+    private String phone;
+
+    @Column(name = "email")
+    private String email;
+
+    @Column(name = "emergency_contact")
+    private String emergencyContact;
+
     /**
      * The name as a crew plan writes it: surname first, given name after.
      *

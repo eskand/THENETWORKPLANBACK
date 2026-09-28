@@ -467,6 +467,16 @@ public class CrewPeopleServiceImpl implements CrewPeopleService {
         if (command.active() != null) {
             person.setActive(command.active());
         }
+        person.setSeniorityRank(command.seniorityRank());
+        person.setHireDate(command.hireDate());
+        person.setPhone(blankToNull(command.phone()));
+        person.setEmail(blankToNull(command.email()));
+        person.setEmergencyContact(blankToNull(command.emergencyContact()));
+    }
+
+    /** Un champ laissé vide dans le formulaire n'est pas une valeur : il se lit « — ». */
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     /** A freshly written person has no history yet: the counters read zero, truthfully. */

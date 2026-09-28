@@ -72,6 +72,9 @@ public class AdsbIngestServiceImpl implements AdsbIngestService {
      */
     private final Map<UUID, List<AdsbSource.StateVector>> lastTraffic = new ConcurrentHashMap<>();
 
+    /** When each tenant's screen last read {@link #current}: the scheduler fetches for those only. */
+    private final Map<UUID, OffsetDateTime> watched = new ConcurrentHashMap<>();
+
     public AdsbIngestServiceImpl(AircraftRepository aircraftRepository,
                                  LegRepository legRepository,
                                  PositionReportRepository positionRepository,
@@ -179,6 +182,21 @@ public class AdsbIngestServiceImpl implements AdsbIngestService {
         }
         return new Result("NOT_RUN", properties.getProvider(), 0, 0, 0,
                 List.of(), OffsetDateTime.now(ZoneOffset.UTC));
+    }
+
+    @Override
+    public Result current(UUID tenantId) {
+        watched.put(tenantId, OffsetDateTime.now(ZoneOffset.UTC));
+        Result previous = lastRuns.get(tenantId);
+        return previous != null ? previous : ingest(tenantId);
+    }
+
+    @Override
+    public List<UUID> watchedSince(OffsetDateTime since) {
+        return watched.entrySet().stream()
+                .filter(entry -> !entry.getValue().isBefore(since))
+                .map(Map.Entry::getKey)
+                .toList();
     }
 
     @Override

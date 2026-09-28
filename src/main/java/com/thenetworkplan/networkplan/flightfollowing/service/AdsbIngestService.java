@@ -48,6 +48,19 @@ public interface AdsbIngestService {
     Result lastRun(UUID tenantId);
 
     /**
+     * What a screen reads: the last run, and a note that this tenant's screen
+     * is open. Only the very first read fetches — so the first board already
+     * has positions — every later one is answered from memory, and the next
+     * fetch is made by {@code AdsbIngestScheduler}, outside the request. A
+     * board that took 20 ms no longer waits on the provider (0.7 s measured,
+     * up to the 10 s timeout).
+     */
+    Result current(UUID tenantId);
+
+    /** Tenants whose screen read {@link #current} at or after {@code since}. */
+    List<UUID> watchedSince(OffsetDateTime since);
+
+    /**
      * The live traffic the source last returned inside the box.
      *
      * <p>These are other operators' aircraft, not ours: real messages from

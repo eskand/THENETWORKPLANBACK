@@ -92,11 +92,12 @@ public class FlightFollowingServiceImpl implements FlightFollowingService {
         String operatorName = operatorName(tenantId);
         List<Leg> legs = legRepository.findProgramme(tenantId, start, start.plusDays(1));
 
-        // Lire le flux avant de composer le tableau : la fenetre de
-        // rafraichissement de AdsbProperties evite qu un ecran ouvert en
-        // permanence n epuise le quota. Un echec ne fait rien echouer — les
-        // dernieres positions connues restent, avec leur age.
-        AdsbIngestService.Result adsb = adsbIngestService.ingest(tenantId);
+        // Le dernier releve ADS-B, sans attendre le fournisseur : seule la
+        // premiere lecture le fait, les suivants sont faits par
+        // AdsbIngestScheduler hors de la requete (audit du 23/09 : 0,7 s par
+        // relecture, jusqu au timeout de 10 s, pour un tableau de 20 ms). Un
+        // echec ne fait rien echouer — les dernieres positions restent, avec leur age.
+        AdsbIngestService.Result adsb = adsbIngestService.current(tenantId);
 
         Map<UUID, PositionDto> lastByLeg = new HashMap<>();
         if (!legs.isEmpty()) {

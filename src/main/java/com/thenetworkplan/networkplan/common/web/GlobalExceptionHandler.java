@@ -13,6 +13,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /** Turns exceptions into a single, predictable error shape. */
 @RestControllerAdvice
@@ -24,6 +25,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiError> handleNotFound(ResourceNotFoundException ex, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiError.of(404, "Not Found", ex.getMessage(), request.getRequestURI()));
+    }
+
+    /** Une route inconnue est un 404 : sans ce gestionnaire, handleUnexpected en faisait un 500
+     *  et journalisait une pile d'erreur pour une simple faute de chemin (audit du 23/09). */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiError> handleNoRoute(NoResourceFoundException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiError.of(404, "Not Found", "No such endpoint", request.getRequestURI()));
     }
 
     @ExceptionHandler(BusinessRuleException.class)

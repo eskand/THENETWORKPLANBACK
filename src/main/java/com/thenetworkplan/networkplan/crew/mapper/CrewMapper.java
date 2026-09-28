@@ -76,7 +76,12 @@ public class CrewMapper {
                 blockMinutes28d,
                 blockMinutes365d,
                 absentToday,
-                person.isActive());
+                person.isActive(),
+                person.getSeniorityRank(),
+                person.getHireDate(),
+                person.getPhone(),
+                person.getEmail(),
+                person.getEmergencyContact());
     }
 
     /** Expects {@code aircraftType} to be loaded: every query left-join-fetches it. */

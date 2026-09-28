@@ -31,5 +31,11 @@ public record PersonDto(
         long blockMinutes28d,
         long blockMinutes365d,
         String absentToday,
-        boolean active) implements Serializable {
+        boolean active,
+        /* le dossier de Crew Management v226.211 — nuls tant qu'ils ne sont pas tenus */
+        Integer seniorityRank,
+        LocalDate hireDate,
+        String phone,
+        String email,
+        String emergencyContact) implements Serializable {
 }
